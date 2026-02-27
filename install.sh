@@ -67,17 +67,25 @@ restart_moonraker()
 
 add_updater()
 {
-    echo -e -n "Adding update manager to moonraker.conf... "
+    echo -e -n "Adding/Updating manager in moonraker.conf... "
 
     update_section=$(grep -c '\[update_manager happy-hare-toolchanger-bridge\]' ${MOONRAKER_CONFIG_DIR}/moonraker.conf || true)
     if [ "${update_section}" -eq 0 ]; then
         echo -e "\n" >> ${MOONRAKER_CONFIG_DIR}/moonraker.conf
-        cat "${SRCDIR}/file_templates/moonraker_update.txt" >> ${MOONRAKER_CONFIG_DIR}/moonraker.conf
+        echo "[update_manager happy-hare-toolchanger-bridge]" >> ${MOONRAKER_CONFIG_DIR}/moonraker.conf
+        echo "type: git_repo" >> ${MOONRAKER_CONFIG_DIR}/moonraker.conf
+        echo "path: ${SRCDIR}" >> ${MOONRAKER_CONFIG_DIR}/moonraker.conf
+        echo "origin: https://github.com/AcrimoniousMirth/happy-hare-toolchanger-bridge.git" >> ${MOONRAKER_CONFIG_DIR}/moonraker.conf
+        echo "primary_branch: main" >> ${MOONRAKER_CONFIG_DIR}/moonraker.conf
+        echo "managed_services: klipper" >> ${MOONRAKER_CONFIG_DIR}/moonraker.conf
         echo -e "\n" >> ${MOONRAKER_CONFIG_DIR}/moonraker.conf
         echo "[OK]"
         restart_moonraker
     else
-        echo -e "[update_manager happy-hare-toolchanger-bridge] already exists in moonraker.conf [SKIPPED]"
+        # Update path in case it changed
+        sed -i "s|path:.*happy-hare-toolchanger-bridge.*|path: ${SRCDIR}|" ${MOONRAKER_CONFIG_DIR}/moonraker.conf
+        echo "[UPDATED PATH]"
+        restart_moonraker
     fi
 }
 
