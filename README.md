@@ -68,6 +68,15 @@ pause_on_runout: False
 
 The bridge will automatically swap these into Happy Hare's internal manager when `SET_MMU_EXTRUDER` is called.
 
+### 5. Recommended Parameters (`mmu_parameters.cfg`)
+While the bridge dynamically manages the extruder, you should set a safe default in your `mmu_parameters.cfg`:
+
+```ini
+extruder: extruder   # The default physical extruder name
+```
+
+The bridge's `MMU_START_SETUP` macro will automatically override this at startup based on which tool is currently physically loaded.
+
 ---
 
 ## How it Works
