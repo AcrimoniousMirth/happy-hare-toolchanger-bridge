@@ -1,0 +1,70 @@
+# Happy Hare MMU Software - Toolchanger Bridge
+#
+# Goal: Provide dynamic extruder and sensor switching for multi-toolhead setups
+#
+# Copyright (C) 2024  Antigravity / Google Deepmind
+# This file may be distributed under the terms of the GNU GPLv3 license.
+
+import logging
+
+class MmuToolchangerBridge:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.gcode = self.printer.lookup_object('gcode')
+        
+        # Register GCODE commands
+        self.gcode.register_command('SET_MMU_EXTRUDER', self.cmd_SET_MMU_EXTRUDER, 
+                                   desc="Dynamically switch Happy Hare's active extruder")
+
+    def cmd_SET_MMU_EXTRUDER(self, gcmd):
+        mmu = self.printer.lookup_object('mmu', None)
+        if mmu is None:
+            gcmd.respond_info("MMU object not found")
+            return
+
+        extruder_name = gcmd.get_str('EXTRUDER', 'extruder')
+        
+        # 1. Update mmu.extruder_name
+        mmu.extruder_name = extruder_name
+        
+        # 2. Update mmu_toolhead.mmu_extruder_stepper
+        try:
+            # Happy Hare uses MmuExtruderStepper to wrap the actual stepper
+            from mmu.mmu_machine import MmuExtruderStepper
+            new_mmu_stepper = MmuExtruderStepper(mmu.mmu_toolhead.config, mmu, extruder_name)
+            mmu.mmu_toolhead.mmu_extruder_stepper = new_mmu_stepper
+            mmu.mmu_extruder_stepper = new_mmu_stepper
+            
+            # 3. Synchronize gear rail endstops if necessary
+            # The sensor manager holds references to steppers for endstop stopping
+            for endstop in mmu.gear_rail.get_endstops():
+                name = endstop.get_name()
+                if name in [mmu.SENSOR_TOOLHEAD, mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_COMPRESSION, mmu.SENSOR_TENSION]:
+                    # Update the stepper associated with this endstop
+                    # This ensures rapid stopping on synced homing for the new extruder
+                    endstop.steppers = [new_mmu_stepper.stepper]
+            
+            # 4. Swap sensors in sensor_manager.all_sensors
+            # We expect sensors named mmu_extruder_0/1 and mmu_toolhead_0/1 to exist
+            suffix = "0" if extruder_name == "extruder" else "1"
+            
+            ext_sensor = self.printer.lookup_object('filament_switch_sensor mmu_extruder_' + suffix, None)
+            th_sensor = self.printer.lookup_object('filament_switch_sensor mmu_toolhead_' + suffix, None)
+            
+            if ext_sensor:
+                mmu.sensor_manager.all_sensors[mmu.SENSOR_EXTRUDER_ENTRY] = ext_sensor
+            if th_sensor:
+                mmu.sensor_manager.all_sensors[mmu.SENSOR_TOOLHEAD] = th_sensor
+
+            # Refresh UI/Active sensors
+            mmu.sensor_manager.reset_active_gate(mmu.gate)
+            
+            mmu.log_info("MMU: Active extruder dynamically switched to '%s' (with sensors %s)" % (extruder_name, suffix))
+        except Exception as e:
+            mmu.log_info("MMU: Failed to switch extruder: %s" % str(e))
+            import traceback
+            mmu.log_info(traceback.format_exc())
+            raise gcmd.error("Failed to switch extruder: %s" % str(e))
+
+def load_config(config):
+    return MmuToolchangerBridge(config)
