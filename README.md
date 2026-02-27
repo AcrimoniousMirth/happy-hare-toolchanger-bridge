@@ -14,7 +14,7 @@ The module can be installed into an existing Klipper installation with the inclu
 
 ```bash
 cd ~
-git clone https://github.com/AcrimoniousMirth/happy-hare-toolchanger-bridge.git # <--- Update to your actual repo URL
+git clone https://github.com/AcrimoniousMirth/happy-hare-toolchanger-bridge.git
 cd happy-hare-toolchanger-bridge
 ./install.sh
 ```
