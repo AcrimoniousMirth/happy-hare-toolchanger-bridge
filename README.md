@@ -49,6 +49,25 @@ The `install.sh` script automatically links the coordination macros into your pr
 ### 3. Example Configurations
 Full examples for hardware mapping and main MMU integration are provided in the `examples/` directory of this repository for reference.
 
+### 4. Sensor Naming Convention
+The bridge expects sensors to be defined as standard Klipper `[filament_switch_sensor]` objects with specific names. **Do not** define these in the `[mmu_sensors]` section of Happy Hare.
+
+In your hardware config, define them as:
+- `mmu_extruder_0` and `mmu_toolhead_0` (for `extruder`)
+- `mmu_extruder_1` and `mmu_toolhead_1` (for `extruder1`)
+
+```ini
+[filament_switch_sensor mmu_extruder_0]
+switch_pin: ^Tool0:PA13
+pause_on_runout: False
+
+[filament_switch_sensor mmu_toolhead_0]
+switch_pin: ^Tool0:PA8
+pause_on_runout: False
+```
+
+The bridge will automatically swap these into Happy Hare's internal manager when `SET_MMU_EXTRUDER` is called.
+
 ---
 
 ## How it Works
