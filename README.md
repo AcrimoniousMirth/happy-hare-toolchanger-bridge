@@ -53,8 +53,8 @@ Full examples for hardware mapping and main MMU integration are provided in the 
 The bridge expects sensors to be defined as standard Klipper `[filament_switch_sensor]` objects with specific names. **Do not** define these in the `[mmu_sensors]` section of Happy Hare.
 
 In your hardware config, define them as:
-- `mmu_extruder_0` and `mmu_toolhead_0` (for `extruder`)
-- `mmu_extruder_1` and `mmu_toolhead_1` (for `extruder1`)
+- `mmu_extruder_0`, `mmu_toolhead_0`, `mmu_tension_0` (for `extruder`)
+- `mmu_extruder_1`, `mmu_toolhead_1`, `mmu_tension_1` (for `extruder1`)
 
 ```ini
 [filament_switch_sensor mmu_extruder_0]
@@ -63,6 +63,10 @@ pause_on_runout: False
 
 [filament_switch_sensor mmu_toolhead_0]
 switch_pin: ^Tool0:PA8
+pause_on_runout: False
+
+[filament_switch_sensor mmu_tension_0]
+switch_pin: ^Tool0:PA14
 pause_on_runout: False
 ```
 

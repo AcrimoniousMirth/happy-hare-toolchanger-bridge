@@ -45,16 +45,19 @@ class MmuToolchangerBridge:
                     endstop.steppers = [new_mmu_stepper.stepper]
             
             # 4. Swap sensors in sensor_manager.all_sensors
-            # We expect sensors named mmu_extruder_0/1 and mmu_toolhead_0/1 to exist
+            # We expect sensors named mmu_extruder_0/1, mmu_toolhead_0/1, and mmu_tension_0/1 to exist
             suffix = "0" if extruder_name == "extruder" else "1"
             
             ext_sensor = self.printer.lookup_object('filament_switch_sensor mmu_extruder_' + suffix, None)
             th_sensor = self.printer.lookup_object('filament_switch_sensor mmu_toolhead_' + suffix, None)
+            tension_sensor = self.printer.lookup_object('filament_switch_sensor mmu_tension_' + suffix, None)
             
             if ext_sensor:
                 mmu.sensor_manager.all_sensors[mmu.SENSOR_EXTRUDER_ENTRY] = ext_sensor
             if th_sensor:
                 mmu.sensor_manager.all_sensors[mmu.SENSOR_TOOLHEAD] = th_sensor
+            if tension_sensor:
+                mmu.sensor_manager.all_sensors[mmu.SENSOR_TENSION] = tension_sensor
 
             # Refresh UI/Active sensors
             mmu.sensor_manager.reset_active_gate(mmu.gate)
