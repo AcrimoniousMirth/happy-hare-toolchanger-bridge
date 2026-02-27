@@ -39,21 +39,15 @@ Add the following to your `printer.cfg` (or an included file like `mmu.cfg`):
 [mmu_toolchanger_bridge]
 ```
 
-### 2. Include Coordination Macros
-Include the provided macros to handle the switching logic during toolchanges:
+### 2. Coordination Macros
+The `install.sh` script automatically links the coordination macros into your printer's configuration directory. Include them in your `printer.cfg` (or `mmu.cfg`):
 
 ```ini
-[include ~/happy-hare-toolchanger-bridge/config/mmu_toolchanger_logic.cfg]
+[include mmu_toolchanger_logic.cfg]
 ```
 
-### 3. Usage
-The bridge provides the `SET_MMU_EXTRUDER` command:
-
-```gcode
-SET_MMU_EXTRUDER EXTRUDER=extruder1
-```
-
-This is automatically handled by the overridden `SELECT_TOOL` macro included in the logic config.
+### 3. Example Configurations
+Full examples for hardware mapping and main MMU integration are provided in the `examples/` directory of this repository for reference.
 
 ---
 

@@ -56,6 +56,10 @@ link_extension()
     echo -n "Linking extension to Klipper... "
     ln -sf "${SRCDIR}/src/mmu_toolchanger_bridge.py" "${KLIPPER_PATH}/klippy/extras/mmu_toolchanger_bridge.py"
     echo "[OK]"
+
+    echo -n "Linking logic configuration to printer config... "
+    ln -sf "${SRCDIR}/examples/mmu_toolchanger_logic.cfg" "${MOONRAKER_CONFIG_DIR}/mmu_toolchanger_logic.cfg"
+    echo "[OK]"
 }
 
 restart_moonraker()
