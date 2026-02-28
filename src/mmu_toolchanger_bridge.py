@@ -22,7 +22,7 @@ class MmuToolchangerBridge:
             gcmd.respond_info("MMU object not found")
             return
 
-        extruder_name = gcmd.get_str('EXTRUDER', 'extruder')
+        extruder_name = gcmd.get('EXTRUDER', 'extruder')
         
         # 1. Update mmu.extruder_name
         mmu.extruder_name = extruder_name
