@@ -310,25 +310,29 @@ class MmuToolchangerBridge:
             gt_es  = next((e[0] for e in registered_es if e[1] == p_gt), None) if p_gt else None
             gear_es = next((e[0] for e in registered_es if e[1] == p_gear), None) if p_gear else None
             
+            # Map HH target names to the physical endstops we want to relay them to
+            hh_ext = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_EXTRUDER_ENTRY, unit_val)
+            hh_th  = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_TOOLHEAD, unit_val)
+            hh_gt  = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_GATE, unit_val)
+            hh_gear = "%s_%s" % (mmu.SENSOR_GEAR_PREFIX, suffix)
+            
+            relay_map = {}
+            if ext_es:
+                relay_map[hh_ext] = ext_es
+                relay_map[mmu.SENSOR_EXTRUDER_ENTRY] = ext_es
+            if th_es:
+                relay_map[hh_th] = th_es
+                relay_map[mmu.SENSOR_TOOLHEAD] = th_es
+            if gt_es:
+                relay_map[hh_gt] = gt_es
+                relay_map[mmu.SENSOR_GATE] = gt_es
+            if gear_es:
+                relay_map[hh_gear] = gear_es
+            
             for es, name in registered_es:
-                # Expected HH lookup names for this unit
-                hh_ext = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_EXTRUDER_ENTRY, unit_val)
-                hh_th  = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_TOOLHEAD, unit_val)
-                hh_gt  = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_GATE, unit_val)
-                hh_gear = "%s_%s" % (mmu.SENSOR_GEAR_PREFIX, suffix)
-                
-                if name in [hh_ext, mmu.SENSOR_EXTRUDER_ENTRY] and ext_es:
-                    new_endstops.append((ext_es, name))
-                    logging.info("MMU Toolchanger Bridge: Relayed %s to %s" % (name, p_ext))
-                elif name in [hh_th, mmu.SENSOR_TOOLHEAD] and th_es:
-                    new_endstops.append((th_es, name))
-                    logging.info("MMU Toolchanger Bridge: Relayed %s to %s" % (name, p_th))
-                elif name in [hh_gt, mmu.SENSOR_GATE] and gt_es:
-                    new_endstops.append((gt_es, name))
-                    logging.info("MMU Toolchanger Bridge: Relayed %s to %s" % (name, p_gt))
-                elif name == hh_gear and gear_es:
-                    new_endstops.append((gear_es, name))
-                    logging.info("MMU Toolchanger Bridge: Relayed %s to %s" % (name, p_gear))
+                if name in relay_map:
+                    new_endstops.append((relay_map[name], name))
+                    logging.info("MMU Toolchanger Bridge: Relayed %s" % name)
                 else:
                     new_endstops.append((es, name))
             mmu.gear_rail.extra_endstops = new_endstops
