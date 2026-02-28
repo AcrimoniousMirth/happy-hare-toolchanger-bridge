@@ -69,7 +69,7 @@ class BridgeProxyEndstop:
 
     def query_endstop(self, print_time):
         # Return state from native sensor. Note: filament_switch_sensor.get_status() returns a dict.
-        return 1 if self.sensor.get_status().get('filament_detected') else 0
+        return 1 if self.sensor.get_status(0).get('filament_detected') else 0
 
     def home_start(self, print_time, sample_time, sample_count, rest_time, triggered):
         self.completion = self.reactor.completion()
@@ -106,7 +106,7 @@ class BridgeProxySensor:
         self.runout_helper = ProxyHelper(native_sensor)
 
     def get_status(self, eventtime):
-        return self.sensor.get_status()
+        return self.sensor.get_status(eventtime)
 
 class BridgeMockEndstop:
     def __init__(self, reactor):
