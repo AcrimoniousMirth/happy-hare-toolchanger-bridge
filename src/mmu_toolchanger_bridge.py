@@ -290,10 +290,13 @@ class MmuToolchangerBridge:
                 
                 if name in [hh_ext, mmu.SENSOR_EXTRUDER_ENTRY] and ext_es:
                     new_endstops.append((ext_es, name))
+                    logging.info("MMU Toolchanger Bridge: Relayed %s to %s" % (name, p_ext))
                 elif name in [hh_th, mmu.SENSOR_TOOLHEAD] and th_es:
                     new_endstops.append((th_es, name))
+                    logging.info("MMU Toolchanger Bridge: Relayed %s to %s" % (name, p_th))
                 elif name in [hh_gt, mmu.SENSOR_GATE] and gt_es:
                     new_endstops.append((gt_es, name))
+                    logging.info("MMU Toolchanger Bridge: Relayed %s to %s" % (name, p_gt))
                 else:
                     new_endstops.append((es, name))
             mmu.gear_rail.extra_endstops = new_endstops
@@ -349,6 +352,14 @@ class MmuToolchangerBridge:
         mmu.log_info(
             "MMU: Active extruder switched to '%s' (sensor suffix: %s)"
             % (extruder_name, suffix))
+        
+        # Diagnostic: Log sensor states
+        for hh_name in [mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_GATE, mmu.SENSOR_TOOLHEAD]:
+            s = mmu.sensor_manager.all_sensors.get(hh_name)
+            if s:
+                state = "DETECTED" if s.runout_helper.filament_present else "EMPTY"
+                actual_name = getattr(s, 'name', 'unknown')
+                logging.info("MMU Toolchanger Bridge: Sensor '%s' -> %s (%s)" % (hh_name, actual_name, state))
 
     # -------------------------------------------------------------------------
 
