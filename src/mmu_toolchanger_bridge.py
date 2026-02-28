@@ -189,81 +189,67 @@ class MmuToolchangerBridge:
             return self.reactor.NEVER
 
         sensor_manager = mmu.sensor_manager
+        p = self.sensor_prefix
 
-        # 1. Scan Klipper config for native sensors we want to "bridge" into Happy Hare.
-        # We look for [filament_switch_sensor mmu_X] patterns.
-        try:
-            configfile = self.printer.lookup_object('configfile')
-            # Extract configuration dictionary
-            config = configfile.get_status(None).get('config')
-            if not config:
-                 config = configfile.get_status(None).get('settings')
+        # 1. Proactively discover all native Klipper sensors that should be bridged.
+        # We look for [filament_switch_sensor mmu_X] and [mmu_sensor mmu_X].
+        configfile = self.printer.lookup_object('configfile')
+        config = configfile.get_status(None).get('config', configfile.get_status(None).get('settings', {}))
+        
+        found_sensors = []
+        for section in config.keys():
+            match = re.match(r'^(filament_switch_sensor|mmu_sensor) (%s_.*)$' % p, section)
+            if match:
+                name = match.group(2)
+                found_sensors.append((section, name))
 
-            if config:
-                for section in config.keys():
-                    if section.startswith('filament_switch_sensor '):
-                        name = section.split(' ', 1)[1]
-                        # Patterns to match: mmu_gate_N, mmu_extruder_N, mmu_toolhead_N, mmu_tension_N
-                        # and also mmu_pre_gate_N, mmu_gear_N, mmu_compression_N
-                        match = re.match(r'^%s_(gate|extruder|toolhead|tension|pre_gate|gear|compression)_(\d+)$' % self.sensor_prefix, name)
-                        if match:
-                            sensor_type = match.group(1)
-                            i = int(match.group(2))
-                            
-                            # Determine if this sensor already exists in MMU's all_sensors
-                            # (e.g., if it was defined in [mmu_sensors] and HH already registered it)
-                            exists = False
-                            if name in sensor_manager.all_sensors:
-                                exists = True
-                            
-                            if not exists:
-                                sensor_obj = self.printer.lookup_object(section, None)
-                                if sensor_obj:
-                                    # 1. Register as a proxy endstop in gear_rail so hmove works.
-                                    proxy_es = BridgeProxyEndstop(mmu, sensor_obj, name)
-                                    mmu.gear_rail.add_extra_endstop("mock", name, register=True, mcu_endstop=proxy_es)
-                                    logging.info("MMU Toolchanger Bridge: Registered %s as proxy gear rail endstop" % name)
+        for section, name in found_sensors:
+            sensor_obj = self.printer.lookup_object(section, None)
+            if not sensor_obj:
+                continue
 
-                                    # 2. Add as a proxy sensor to sensor_manager so HH logic (check_gate_sensor) works.
-                                    proxy_s = BridgeProxySensor(name, sensor_obj)
-                                    sensor_manager.all_sensors[name] = proxy_s
-                                    logging.info("MMU Toolchanger Bridge: Registered %s as proxy sensor object" % name)
+            # Determine sensor type and unit index if applicable
+            # Patterns: mmu_gate_0, mmu_pre_gate_0, mmu_extruder_0, mmu_toolhead_0, etc.
+            match = re.search(r'^(.*)_(\d+)$', name)
+            sensor_type = match.group(1) if match else name
+            i = int(match.group(2)) if match else None
 
-                                    # Special case: Map gate to gear rail endstop (important for preload)
-                                    if sensor_type == 'gate':
-                                        gear_name = "%s_%d" % (mmu.SENSOR_GEAR_PREFIX, i)
-                                        if gear_name not in mmu.gear_rail.get_extra_endstop_names():
-                                            mmu.gear_rail.add_extra_endstop("mock", gear_name, register=True, mcu_endstop=proxy_es)
-                                        if gear_name not in sensor_manager.all_sensors:
-                                            sensor_manager.all_sensors[gear_name] = proxy_s
+            # 1. Register as a Proxy Endstop in HH's Gear Rail so hmove/calibration works.
+            # We add it if HH hasn't already registered a real hardware endstop with this name.
+            if name not in mmu.gear_rail.get_extra_endstop_names():
+                proxy_es = BridgeProxyEndstop(mmu, sensor_obj, name)
+                mmu.gear_rail.add_extra_endstop("mock", name, register=True, mcu_endstop=proxy_es)
+                logging.info("MMU Toolchanger Bridge: Registered %s as gear rail ProxyEndstop" % name)
 
-        except Exception as e:
-            logging.warning("MMU Toolchanger Bridge: Exception scanning for native sensors: %s" % str(e))
+            # 2. Register as a Proxy Sensor in HH's Sensor Manager for UI/Logic.
+            if name not in sensor_manager.all_sensors:
+                proxy_s = BridgeProxySensor(name, sensor_obj)
+                sensor_manager.all_sensors[name] = proxy_s
+                logging.info("MMU Toolchanger Bridge: Registered %s as proxy Sensor object" % name)
 
-        # 2. Ensure generic HH endstop names exist in gear_rail so they can be swapped.
-        # If the MMU doesn't have an extruder sensor, "extruder" won't be in the list,
-        # which causes MMU_CALIBRATE_BOWDEN to fail. We add a 'mock' if missing.
-        # We also need to add unit-prefixed versions (e.g. unit_1_extruder) because
-        # HH looks those up in multi-unit configurations (T1-T5).
-        # We use our MockEndstop to satisfy HH's logging/debug logic.
+            # 3. Special Case: Map unit-specific gate sensor to HH's 'gear' endstop name.
+            # HH preloads by homing to 'mmu_gear_N'. In T0 mode, we want this to be the gate sensor.
+            # We map 'mmu_gear_N' (Endstop) to the same proxy as 'mmu_gate_N'.
+            if i is not None and "gate" in sensor_type and "pre_gate" not in sensor_type:
+                gear_name = "%s_%d" % (mmu.SENSOR_GEAR_PREFIX, i)
+                if gear_name not in mmu.gear_rail.get_extra_endstop_names():
+                    proxy_es = BridgeProxyEndstop(mmu, sensor_obj, gear_name)
+                    mmu.gear_rail.add_extra_endstop("mock", gear_name, register=True, mcu_endstop=proxy_es)
+                if gear_name not in sensor_manager.all_sensors:
+                    sensor_manager.all_sensors[gear_name] = BridgeProxySensor(gear_name, sensor_obj)
+
+        # 2. Ensure generic HH endstop names (mmu_gate, etc.) have Mock fallbacks if missing.
         mock_es = BridgeMockEndstop(self.reactor)
         generic_names = [mmu.SENSOR_GATE, mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_TOOLHEAD]
-        for name in generic_names:
-            names_to_check = [name]
-            if mmu.mmu_machine.num_units > 1:
-                # Add unit prefixes for all possible units (0 to num_units-1)
-                for i in range(mmu.mmu_machine.num_units):
-                    names_to_check.append(sensor_manager.get_unit_sensor_name(name, i))
+        for base_name in generic_names:
+            names_to_check = [base_name]
+            for i in range(mmu.mmu_machine.num_units):
+                names_to_check.append(sensor_manager.get_unit_sensor_name(base_name, i))
+                names_to_check.append("%s_%d" % (mmu.SENSOR_GEAR_PREFIX, i))
 
             for n in names_to_check:
                 if n not in mmu.gear_rail.get_extra_endstop_names():
                     mmu.gear_rail.add_extra_endstop("mock", n, register=True, mcu_endstop=mock_es)
-        
-        # Also ensure 'mmu_gear_X' endstops exist because HH preloads to them
-        for i in range(mmu.mmu_machine.num_units):
-            gear_name = "%s_%s" % (mmu.SENSOR_GEAR_PREFIX, i)
-            if gear_name not in mmu.gear_rail.get_extra_endstop_names():
-                mmu.gear_rail.add_extra_endstop("mock", gear_name, register=True, mcu_endstop=mock_es)
 
         # 3. Save originals so we can restore them when T1+ is active
         self._orig_settings = {
@@ -460,13 +446,14 @@ class MmuToolchangerBridge:
             mmu.SENSOR_EXTRUDER_ENTRY: "%s_extruder_%s" % (p, suffix),
             mmu.SENSOR_TOOLHEAD:       "%s_toolhead_%s" % (p, suffix),
             mmu.SENSOR_TENSION:        "%s_tension_%s"  % (p, suffix),
-            mmu.SENSOR_GATE:           "%s_gate_%s"     % (p, suffix) if is_t0 else None,
+            mmu.SENSOR_GATE:           "%s_gate_%s"     % (p, suffix),
         }
 
         # T0 Preload Sensor Logic:
         # Happy Hare native behavior: user inserts to 'gate', HH preloads by homing to 'gear'.
         # For T0, user inserts filament at 'mmu_pre_gate_0' (so it acts as HH's 'gate').
-        # Preload should motor the filament until it reaches 'mmu_gate_0' (acts as HH's 'gear').
+        # Preload moves the filament until it reaches 'mmu_gate_0'.
+        # We map 'mmu_gear_0' to 'mmu_gate_0' so HH's preload homing hits the right sensor.
         if is_t0:
             sensor_map.update({
                 "%s_0" % mmu.SENSOR_GEAR_PREFIX: "%s_gate_0" % p,
@@ -521,14 +508,27 @@ class MmuToolchangerBridge:
                 state = "TRIGGERED" if es.query_endstop(0) else "OPEN"
             gcmd.respond_info("  %s -> pin:%s, mcu:%s [%s]" % (name, pin, mcu_name, state))
 
-        gcmd.respond_info("All Sensors (Manager Keys):")
-        for name in sorted(mmu.sensor_manager.all_sensors.keys()):
-            s = mmu.sensor_manager.all_sensors[name]
+        gcmd.respond_info("All Sensors (Manager View):")
+        for name in sorted(sensor_manager.all_sensors.keys()):
+            s = sensor_manager.all_sensors[name]
             helper = getattr(s, 'runout_helper', None)
-            state = "unknown"
+            detected = False
             if helper:
-                state = "DETECTED" if helper.filament_present else "EMPTY"
-            gcmd.respond_info("  %s -> %s" % (name, state))
+                detected = helper.filament_present
+            
+            # Find associated endstop to show pin
+            es_info = "no_endstop"
+            for es, es_name in mmu.gear_rail.extra_endstops:
+                if es_name == name:
+                    mcu_name = es.get_mcu().get_name() if hasattr(es, 'get_mcu') else es.__class__.__name__
+                    pin = getattr(es, '_pin', 'unknown')
+                    state = "unknown"
+                    if hasattr(es, 'query_endstop'):
+                        state = "TRIGGERED" if es.query_endstop(0) else "OPEN"
+                    es_info = "pin:%s, mcu:%s [%s]" % (pin, mcu_name, state)
+                    break
+            
+            gcmd.respond_info("  %s -> %s (%s)" % (name, "DETECTED" if detected else "EMPTY", es_info))
 
     # -------------------------------------------------------------------------
 
