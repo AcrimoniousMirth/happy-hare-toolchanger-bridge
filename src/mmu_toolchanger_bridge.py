@@ -264,6 +264,16 @@ class MmuToolchangerBridge:
             mmu.SENSOR_GATE:           "%s_pre_gate_0"  % p if is_t0 else None,
         }
 
+        # Sensor Deception for T0 Preload:
+        # Map 'gear_0' and 'gate_0' to the pre-gate sensor.
+        # This tricks HH into thinking the filament is already preloaded at the gear,
+        # so it marks the gate as AVAILABLE without any motor movement.
+        if is_t0:
+            sensor_map.update({
+                "gear_0": "%s_pre_gate_0" % p,
+                "gate_0": "%s_pre_gate_0" % p,
+            })
+
         for hh_key, sensor_name in sensor_map.items():
             if sensor_name:
                 sensor_obj = self._lookup_sensor(sensor_name)
