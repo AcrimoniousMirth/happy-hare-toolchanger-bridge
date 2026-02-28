@@ -90,7 +90,35 @@ class MmuToolchangerBridge:
         if mmu is None:
             return
 
-        # Save originals so we can restore them when T1+ is active
+        # 1. Register all per-toolhead sensors as HH Gear Rail endstops.
+        # HH only automatically registers standard sensor names (e.g. mmu_extruder).
+        # We must manually register mmu_extruder_0, mmu_toolhead_0, etc. so that
+        # the gear motor can stop on them during homing/calibration.
+        p = self.sensor_prefix
+        sensor_manager = mmu.sensor_manager
+        ppins = self.printer.lookup_object('pins')
+        
+        # We'll look for sensors matching our toolhead pattern
+        # (e.g. mmu_extruder_0, mmu_toolhead_0, mmu_extruder_1, etc.)
+        all_sensor_names = list(sensor_manager.all_sensors.keys())
+        for name in all_sensor_names:
+            if name.startswith("%s_" % p) and any(x in name for x in ["extruder_", "toolhead_", "pre_gate_"]):
+                if name not in sensor_manager.endstop_names:
+                    sensor = sensor_manager.all_sensors[name]
+                    sensor_pin = sensor.runout_helper.switch_pin
+                    # Register as extra endstop for gear rail
+                    # Use HH's internal registration to ensure consistency
+                    try:
+                        pin_params = ppins.parse_pin(sensor_pin, True, True)
+                        share_name = "%s:%s" % (pin_params['chip_name'], pin_params['pin'])
+                        ppins.allow_multi_use_pin(share_name)
+                        sensor_manager.endstop_names.append(name)
+                        mmu.gear_rail.add_extra_endstop(sensor_pin, name)
+                        logging.info("MMU Toolchanger Bridge: Registered %s as gear rail endstop" % name)
+                    except Exception as e:
+                        logging.warning("MMU Toolchanger Bridge: Failed to register %s: %s" % (name, str(e)))
+
+        # 2. Save originals so we can restore them when T1+ is active
         self._orig_settings = {
             'bowden_homing_max':      mmu.bowden_homing_max,
             'gate_homing_max':        getattr(mmu, 'gate_homing_max', None),
@@ -107,13 +135,9 @@ class MmuToolchangerBridge:
 
         logging.info("MMU Toolchanger Bridge: HH defaults captured")
 
-        # Auto-apply T0 settings if HH already has extruder (T0) as the configured
-        # extruder at startup, so that automatic preload triggered by the pre-gate
-        # sensor works without needing a manual toolchange first.
+        # 3. Auto-apply T0 settings if HH already has extruder (T0) as the configured
+        # extruder at startup.
         if mmu.extruder_name == self.t0_extruder:
-            logging.info(
-                "MMU Toolchanger Bridge: startup extruder is '%s' — "
-                "auto-applying T0 bridge settings" % self.t0_extruder)
             self._apply_settings(mmu, self.t0_extruder)
 
     # -------------------------------------------------------------------------
@@ -164,7 +188,6 @@ class MmuToolchangerBridge:
                     mmu.SENSOR_COMPRESSION,
                     mmu.SENSOR_TENSION,
                 }
-                # Ensure we only keep gear steppers + target toolhead's extruder stepper
                 gear_stepper_ids = {id(s) for s in mmu.gear_rail.steppers if hasattr(s, 'get_name')}
                 
                 for (mcu_endstop, name) in mmu.gear_rail.extra_endstops:
@@ -202,24 +225,17 @@ class MmuToolchangerBridge:
             mmu.preload_attempts = self.t0_load_attempts
 
             # Sensor relay swaps in gear_rail.extra_endstops
-            # Gate -> Pre-Gate 0 (for instant MMU_PRELOAD/load_gate success)
-            # Extruder Entry -> T0's toolhead sensor (mmu_extruder_0)
-            pre_gate_obj = self._lookup_sensor("%s_pre_gate_0" % p)
-            extruder_obj = self._lookup_sensor("%s_extruder_0" % p)
+            pre_gate_name = "%s_pre_gate_0" % p
+            extruder_name_es = "%s_extruder_0" % p
             
             new_endstops = []
-            for es, name in mmu.gear_rail.extra_endstops:
-                if name == mmu.SENSOR_GATE and pre_gate_obj and hasattr(pre_gate_obj, 'runout_helper'):
-                    # We need the mcu_endstop which HH registered earlier.
-                    # HH usually keys them by name in its own list.
-                    # We'll search for the one that matches our target sensor's pin.
-                    target_pin = pre_gate_obj.runout_helper.switch_pin
-                    found_es = next((orig_es for orig_es, orig_name in self._orig_settings['extra_endstops'] 
-                                   if getattr(orig_es, 'name', '') == "%s_pre_gate_0" % p), es)
+            registered_es = mmu.gear_rail.extra_endstops
+            for es, name in registered_es:
+                if name == mmu.SENSOR_GATE:
+                    found_es = next((e[0] for e in registered_es if e[1] == pre_gate_name), es)
                     new_endstops.append((found_es, name))
-                elif name == mmu.SENSOR_EXTRUDER_ENTRY and extruder_obj:
-                    found_es = next((orig_es for orig_es, orig_name in self._orig_settings['extra_endstops'] 
-                                   if orig_name == "%s_extruder_0" % p), es)
+                elif name == mmu.SENSOR_EXTRUDER_ENTRY:
+                    found_es = next((e[0] for e in registered_es if e[1] == extruder_name_es), es)
                     new_endstops.append((found_es, name))
                 else:
                     new_endstops.append((es, name))
@@ -258,7 +274,8 @@ class MmuToolchangerBridge:
             elif not is_t0: # Restore T1+ gate sensor
                 pass # Already handled by reset_active_gate below if we didn't touch it
 
-        # Refresh HH's viewable_sensors for the current gate/UI
+        # Refresh HH's sensor manager unit cache to recognize updated mappings
+        mmu.sensor_manager.reset_active_unit(mmu.unit_selected)
         mmu.sensor_manager.reset_active_gate(mmu.gate_selected)
 
         mmu.log_info(
