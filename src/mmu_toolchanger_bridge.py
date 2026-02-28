@@ -52,7 +52,8 @@ class BridgeProxyEndstop:
         self.proxy_sensor = proxy_sensor # This is a BridgeProxySensor instance
         self.name = name
         self.sensor = proxy_sensor.sensor # Real Klipper sensor object
-        self.runout_helper = proxy_sensor.runout_helper # proxy_sensor's ProxyHelper
+        # Reference the BridgeProxySensor's ProxyHelper
+        self.runout_helper = getattr(proxy_sensor, 'runout_helper', None)
         self.reactor = mmu.printer.get_reactor()
         self._pin = "proxy"
         self.completion = None
@@ -104,49 +105,52 @@ class BridgeProxyEndstop:
         self.completion.wait()
         return home_end_time
 
+class ProxyHelper:
+    def __init__(self, sensor):
+        self.sensor = sensor
+        self.sensor_enabled = True
+        self.runout_suspended = False
+        self._pin = getattr(sensor, '_pin', 'proxy')
+        # Try to find the real Klipper runout helper
+        self.native_helper = getattr(sensor, 'runout_helper', None)
+    
+    @property
+    def switch_pin(self):
+        return self._pin
+
+    @property
+    def filament_present(self):
+        # Prefer the logical status from Klipper's runout_helper (handles '!')
+        if self.native_helper and hasattr(self.native_helper, 'filament_present'):
+            return self.native_helper.filament_present
+        # Fallback to the raw status if no helper
+        try:
+            return self.sensor.get_status(0).get('filament_detected', False)
+        except Exception:
+            return False
+
+    def enable_button_feedback(self, enable):
+        if self.native_helper:
+            if hasattr(self.native_helper, 'enable_button_feedback'):
+                self.native_helper.enable_button_feedback(enable)
+            elif hasattr(self.native_helper, 'button_handler_suspended'):
+                self.native_helper.button_handler_suspended = not enable
+    
+    def enable_runout(self, enable):
+        self.sensor_enabled = enable
+        if self.native_helper:
+            if hasattr(self.native_helper, 'set_enabled'):
+                self.native_helper.set_enabled(enable)
+            if hasattr(self.native_helper, 'enable_runout'):
+                self.native_helper.enable_runout(enable)
+            if hasattr(self.native_helper, 'runout_suspended'):
+                self.native_helper.runout_suspended = not enable
+
 class BridgeProxySensor:
     def __init__(self, name, native_sensor):
         self.name = name
         self.sensor = native_sensor
         # Happy Hare logic expects a runout_helper with filament_present and sensor_enabled
-        # We wrap the native sensor's status
-        class ProxyHelper:
-            def __init__(self, sensor):
-                self.sensor = sensor
-                self.sensor_enabled = True
-                self.runout_suspended = False
-                self._pin = getattr(sensor, '_pin', 'proxy')
-                # Try to find the real Klipper runout helper
-                self.native_helper = getattr(sensor, 'runout_helper', None)
-            
-            @property
-            def switch_pin(self):
-                return self._pin
-
-            @property
-            def filament_present(self):
-                # Prefer the logical status from Klipper's runout_helper (handles '!')
-                if self.native_helper and hasattr(self.native_helper, 'filament_present'):
-                    return self.native_helper.filament_present
-                # Fallback to the raw status if no helper
-                return self.sensor.get_status(0).get('filament_detected', False)
-
-            def enable_button_feedback(self, enable):
-                if self.native_helper:
-                    if hasattr(self.native_helper, 'enable_button_feedback'):
-                        self.native_helper.enable_button_feedback(enable)
-                    elif hasattr(self.native_helper, 'button_handler_suspended'):
-                        self.native_helper.button_handler_suspended = not enable
-            
-            def enable_runout(self, enable):
-                self.sensor_enabled = enable
-                if self.native_helper:
-                    if hasattr(self.native_helper, 'set_enabled'):
-                        self.native_helper.set_enabled(enable)
-                    if hasattr(self.native_helper, 'enable_runout'):
-                        self.native_helper.enable_runout(enable)
-                    if hasattr(self.native_helper, 'runout_suspended'):
-                        self.native_helper.runout_suspended = not enable
         self.runout_helper = ProxyHelper(native_sensor)
 
     def get_status(self, eventtime):
