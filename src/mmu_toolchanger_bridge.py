@@ -170,7 +170,8 @@ class MmuToolchangerBridge:
         self.t0_slow_speed = config.getfloat('t0_slow_speed', 
                                              mmu_config.getfloat('gear_homing_speed', 20.))
         self.t0_pre_gate_to_gate_distance = config.getfloat('t0_pre_gate_to_gate_distance', 0.)
-        self.t0_gate_homing_max = config.getfloat('t0_gate_homing_max', 350.)
+        self.t0_gate_homing_max = config.getfloat('t0_gate_homing_max',
+                                 config.getfloat('t0_gate_preload_homing_max', 350.))
         self.t0_gate_preload_homing_max = config.getfloat('t0_gate_preload_homing_max', 350.)
         self.t0_gate_parking_distance = config.getfloat('t0_gate_parking_distance', 0.)
         # Saved HH defaults (captured at klippy:connect)
@@ -369,14 +370,17 @@ class MmuToolchangerBridge:
         # --- 4. Apply T0 specific load/homing settings ---
         if is_t0:
             # Relay strategy:
-            # 1. Map Gate sensor to Pre-Gate (instant pick-up detection)
-            # 2. Map Extruder Entry to T0's Toolhead sensor
-            # 3. Use high speed for bowden move
             # 4. Use slow zone for final homing to toolhead sensor
-            
+
+            # Homing ceilings to match the long active toolhead path.
             mmu.bowden_homing_max = self.t0_bowden_max
             if hasattr(mmu, 'gate_homing_max'):
-                mmu.gate_homing_max = self.t0_gate_homing_max
+                # For T0, the "gate" sensor is at the toolhead, so "homing to gate" 
+                # (especially on unload) must cover the full bowden length.
+                mmu.gate_homing_max = self.t0_bowden_max
+            
+            # NOTE: We keep t0_gate_homing_max (from config) for specialized uses 
+            # if we ever decide to split them, but for now we need full length here.
             
             mmu.gate_preload_homing_max = self.t0_gate_preload_homing_max
             mmu.gate_parking_distance = self.t0_gate_parking_distance
