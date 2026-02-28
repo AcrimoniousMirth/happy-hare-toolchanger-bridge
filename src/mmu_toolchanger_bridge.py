@@ -148,6 +148,16 @@ class ProxyHelper:
             if hasattr(self.native_helper, 'runout_suspended'):
                 self.native_helper.runout_suspended = not enable
 
+    # Fallbacks for HH MmuRunoutHelper specific methods
+    def set_enabled(self, enable):
+        self.enable_runout(enable)
+    def enable_clog_detection(self, enable):
+        pass
+    def enable_tangle_detection(self, enable):
+        pass
+    def reset_counts(self):
+        pass
+
 class BridgeProxySensor:
     def __init__(self, name, native_sensor):
         self.name = name
@@ -545,13 +555,25 @@ class MmuToolchangerBridge:
                 sensor_obj = self._lookup_sensor_wrapper(mmu, sensor_name)
                 if sensor_obj is not None:
                     mmu.sensor_manager.all_sensors[hh_key] = sensor_obj
-                else:
-                    mmu.sensor_manager.all_sensors.pop(hh_key, None)
             elif not is_t0: # Restore T1+ gate sensor
                 pass # Already handled by reset_active_gate below if we didn't touch it
 
-        # Refresh HH's sensor manager unit cache to recognize updated mappings
-        mmu.sensor_manager.reset_active_unit(mmu.unit_selected)
+        # 2. Update Happy Hare's active unit sensors
+        try:
+            can_reset = True
+            for name, s in mmu.sensor_manager.all_sensors.items():
+                if name.startswith("unit_"):
+                    if not hasattr(s, 'runout_helper') or not hasattr(s.runout_helper, 'enable_button_feedback'):
+                        logging.info("MMU Toolchanger Bridge: Delaying HH sensor reset (Unit sensor '%s' not ready)" % name)
+                        can_reset = False
+                        break
+            
+            if can_reset:
+                mmu.sensor_manager.reset_active_unit(mmu.unit_selected)
+            else:
+                logging.warning("MMU Toolchanger Bridge: Skipping mmu.sensor_manager.reset_active_unit (uninitialized sensors)")
+        except Exception as e:
+            logging.error("MMU Toolchanger Bridge: Error during sensor reset: %s" % str(e))
         mmu.sensor_manager.reset_active_gate(mmu.gate_selected)
 
         # Global Pre-gate Monitoring:
