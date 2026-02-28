@@ -120,6 +120,9 @@ class MmuToolchangerBridge:
                 mmu.SENSOR_EXTRUDER_ENTRY: "%s_extruder_%s" % (p, suffix),
                 mmu.SENSOR_TOOLHEAD:       "%s_toolhead_%s" % (p, suffix),
                 mmu.SENSOR_TENSION:        "%s_tension_%s"  % (p, suffix),
+                # For non-MMU toolheads (e.g. T0), mmu_extruder_N also acts as
+                # the gate sensor — there is no dedicated mmu_gate on that toolhead.
+                mmu.SENSOR_GATE:           "%s_extruder_%s" % (p, suffix),
             }
 
             for hh_key, sensor_name in sensor_map.items():
