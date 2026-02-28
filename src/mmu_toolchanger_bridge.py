@@ -49,8 +49,9 @@ class MmuToolchangerBridge:
                     endstop.steppers = [new_mmu_stepper.stepper]
             
             # 4. Swap sensors in sensor_manager.all_sensors
-            # We expect sensors named mmu_extruder_0/1, mmu_toolhead_0/1, and mmu_tension_0/1 to exist
-            suffix = "0" if extruder_name == "extruder" else "1"
+            # We expect sensors named mmu_extruder_N, mmu_toolhead_N, and mmu_tension_N to exist
+            # Suffix is 0 for 'extruder', 1 for 'extruder1', etc.
+            suffix = extruder_name.replace('extruder', '') or '0'
             
             ext_sensor = self.printer.lookup_object('filament_switch_sensor mmu_extruder_' + suffix, None)
             th_sensor = self.printer.lookup_object('filament_switch_sensor mmu_toolhead_' + suffix, None)
@@ -66,12 +67,13 @@ class MmuToolchangerBridge:
             # Refresh UI/Active sensors
             mmu.sensor_manager.reset_active_gate(mmu.gate)
             
-            mmu.log_info("MMU: Active extruder dynamically switched to '%s' (with sensors %s)" % (extruder_name, suffix))
+            mmu.log_info("MMU: Active extruder dynamically switched to '%s' (suffix %s)" % (extruder_name, suffix))
         except Exception as e:
-            mmu.log_info("MMU: Failed to switch extruder: %s" % str(e))
             import traceback
-            mmu.log_info(traceback.format_exc())
-            raise gcmd.error("Failed to switch extruder: %s" % str(e))
+            error_msg = "Failed to switch extruder: %s\n%s" % (str(e), traceback.format_exc())
+            logging.error("MMU Toolchanger Bridge: %s" % error_msg)
+            # Use self.printer.command_error for nice reporting in Mainsail/Fluidd
+            raise self.printer.command_error("Failed to switch extruder to '%s'. Check mmu.log/klippy.log for details." % extruder_name)
 
 def load_config(config):
     return MmuToolchangerBridge(config)
