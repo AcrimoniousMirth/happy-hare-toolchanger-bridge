@@ -102,7 +102,7 @@ class MmuToolchangerBridge:
         # (e.g. mmu_extruder_0, mmu_toolhead_0, mmu_extruder_1, etc.)
         all_sensor_names = list(sensor_manager.all_sensors.keys())
         for name in all_sensor_names:
-            if name.startswith("%s_" % p) and any(x in name for x in ["extruder_", "toolhead_", "pre_gate_"]):
+            if name.startswith("%s_" % p) and any(x in name for x in ["extruder_", "toolhead_", "pre_gate_", "gear_", "gate_"]):
                 if name not in sensor_manager.endstop_names:
                     sensor = sensor_manager.all_sensors[name]
                     sensor_pin = sensor.runout_helper.switch_pin
@@ -130,6 +130,7 @@ class MmuToolchangerBridge:
             'extruder_force_homing':  getattr(mmu, 'extruder_force_homing', False),
             'gate_load_retries':      getattr(mmu, 'gate_load_retries', 2),
             'preload_attempts':       getattr(mmu, 'preload_attempts', 2),
+            'gate_preload_parking_distance': getattr(mmu, 'gate_preload_parking_distance', -10.),
             'extra_endstops':         list(mmu.gear_rail.extra_endstops) # copy
         }
 
@@ -223,6 +224,7 @@ class MmuToolchangerBridge:
             mmu.extruder_force_homing = True
             mmu.gate_load_retries = self.t0_load_attempts
             mmu.preload_attempts = self.t0_load_attempts
+            mmu.gate_preload_parking_distance = 0.0
 
             # Sensor relay swaps in gear_rail.extra_endstops
             pre_gate_name = "%s_pre_gate_0" % p
@@ -254,6 +256,7 @@ class MmuToolchangerBridge:
                 mmu.extruder_force_homing = self._orig_settings['extruder_force_homing']
                 mmu.gate_load_retries = self._orig_settings['gate_load_retries']
                 mmu.preload_attempts = self._orig_settings['preload_attempts']
+                mmu.gate_preload_parking_distance = self._orig_settings['gate_preload_parking_distance']
                 mmu.gear_rail.extra_endstops = list(self._orig_settings['extra_endstops'])
 
         # --- 5. Swap sensors in HH's live all_sensors dict for UI/Logic ---
