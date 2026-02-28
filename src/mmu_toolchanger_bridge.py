@@ -76,6 +76,7 @@ class BridgeProxyEndstop:
 
     def home_start(self, print_time, sample_time, sample_count, rest_time, triggered):
         self.completion = self.reactor.completion()
+        logging.info("MMU Bridge Proxy [%s]: Homing started (Target Triggered=%d)" % (self.name, triggered))
         self._check_sensor(triggered)
         return self.completion
 
@@ -403,24 +404,24 @@ class MmuToolchangerBridge:
             # physical sensors active for this toolhead.
             unit_val = int(suffix)
             
-            p_ext = "%s_extruder_%s" % (p, suffix)
-            p_th  = "%s_toolhead_%s" % (p, suffix)
-            p_gt  = "%s_pre_gate_%s" % (p, suffix) if is_t0 else None
-            p_gear = "%s_gate_%s" % (p, suffix) if is_t0 else None
+            p_th   = "%s_toolhead_%s" % (p, suffix)
+            p_ext  = "%s_extruder_%s" % (p, suffix)
+            p_gate = "%s_gate_%s"     % (p, suffix) # e.g. mmu_gate_0
+            p_pre  = "%s_pre_gate_%s" % (p, suffix) # e.g. mmu_pre_gate_0
             
             new_endstops = []
             registered_es = mmu.gear_rail.extra_endstops
             
             # Find physical endstops for target sensors
-            ext_es = next((e[0] for e in registered_es if e[1] == p_ext), None)
-            th_es  = next((e[0] for e in registered_es if e[1] == p_th), None)
-            gt_es  = next((e[0] for e in registered_es if e[1] == p_gt), None) if p_gt else None
-            gear_es = next((e[0] for e in registered_es if e[1] == p_gear), None) if p_gear else None
+            ext_es  = next((e[0] for e in registered_es if e[1] == p_ext), None)
+            th_es   = next((e[0] for e in registered_es if e[1] == p_th), None)
+            gate_es = next((e[0] for e in registered_es if e[1] == p_gate), None)
+            pre_es  = next((e[0] for e in registered_es if e[1] == p_pre), None)
             
             # Map HH target names to the physical endstops we want to relay them to
-            hh_ext = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_EXTRUDER_ENTRY, unit_val)
-            hh_th  = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_TOOLHEAD, unit_val)
-            hh_gt  = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_GATE, unit_val)
+            hh_ext  = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_EXTRUDER_ENTRY, unit_val)
+            hh_th   = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_TOOLHEAD, unit_val)
+            hh_gt   = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_GATE, unit_val)
             hh_gear = "%s_%s" % (mmu.SENSOR_GEAR_PREFIX, suffix)
             
             relay_map = {}
@@ -430,11 +431,10 @@ class MmuToolchangerBridge:
             if th_es:
                 relay_map[hh_th] = th_es
                 relay_map[mmu.SENSOR_TOOLHEAD] = th_es
-            if gt_es:
-                relay_map[hh_gt] = gt_es
-                relay_map[mmu.SENSOR_GATE] = gt_es
-            if gear_es:
-                relay_map[hh_gear] = gear_es
+            if gate_es:
+                relay_map[hh_gt] = gate_es
+                relay_map[mmu.SENSOR_GATE] = gate_es
+                relay_map[hh_gear] = gate_es # HH homes to 'gear' for preload
             
             for es, name in registered_es:
                 if name in relay_map:
