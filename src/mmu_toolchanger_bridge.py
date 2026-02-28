@@ -85,6 +85,7 @@ class BridgeProxyEndstop:
         else:
             # Poll every 10ms. Preload/Homing is slow so this is fine.
             self.reactor.register_timer(lambda e: self._check_sensor(triggered), self.reactor.monotonic() + 0.01)
+        return self.reactor.NEVER
 
     def home_wait(self, home_end_time):
         self.completion.wait()
