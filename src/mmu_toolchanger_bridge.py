@@ -30,7 +30,10 @@ class MmuToolchangerBridge:
         # 2. Update mmu_toolhead.mmu_extruder_stepper
         try:
             # Happy Hare uses MmuExtruderStepper to wrap the actual stepper
-            import mmu_machine
+            try:
+                from . import mmu_machine
+            except ImportError:
+                import mmu_machine
             MmuExtruderStepper = mmu_machine.MmuExtruderStepper
             
             # Get the exact config section for the target extruder
