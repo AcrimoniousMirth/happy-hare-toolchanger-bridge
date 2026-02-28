@@ -3,17 +3,24 @@
 # Goal: Provide dynamic extruder and sensor switching for multi-toolhead setups.
 #
 # Architecture:
-#   T0  -> extruder  (single filament, gate-fed by HH, has its own sensors)
-#   T1+ -> extruder1 (MMU multi-material toolhead, sensors configured in [mmu_sensors])
+#   T0  -> extruder  (single filament, gate-fed by HH)
+#   T1+ -> extruder1 (MMU multi-material toolhead)
 #
 # On each toolhead switch, this bridge updates:
 #   1. mmu.extruder_name and mmu_extruder_stepper references
 #   2. The extruder stepper on gear_rail extra endstops (for rapid stop on homing)
 #   3. HH's live sensor dict (all_sensors) to reflect the active toolhead's sensors
 #
-# Sensor naming convention for non-MMU toolheads (e.g. T0 using 'extruder'):
-#   [filament_switch_sensor extruder_toolhead_sensor]  -> toolhead sensor for T0
-#   [filament_switch_sensor extruder_extruder_sensor]  -> extruder entry sensor for T0
+# Sensor lookup uses a numeric suffix derived from the extruder name:
+#   extruder  -> suffix 0 -> mmu_extruder_0, mmu_toolhead_0, mmu_tension_0
+#   extruder1 -> suffix 1 -> mmu_extruder_1, mmu_toolhead_1, mmu_tension_1
+#
+# These should match existing [filament_switch_sensor] sections in your config.
+# No changes to mmu_hardware.cfg or Tool*.cfg needed.
+#
+# Config:
+#   [mmu_toolchanger_bridge]
+#   sensor_prefix: mmu   # prefix for sensor names (default: mmu)
 #
 # Copyright (C) 2024  Antigravity / Google Deepmind
 # This file may be distributed under the terms of the GNU GPLv3 license.
@@ -25,38 +32,25 @@ class MmuToolchangerBridge:
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
 
-        # Which extruder HH is natively configured for (its sensors live in [mmu_sensors]).
-        # All other extruders are "non-MMU" and need per-toolhead sensor lookup.
-        self.mmu_extruder_name = config.get('mmu_extruder', 'extruder1')
-
-        # Snapshot of HH's original sensors, captured at klippy:connect.
-        # Used to restore all_sensors when switching back to the MMU toolhead.
-        self._mmu_sensor_snapshot = {}
-
-        self.printer.register_event_handler('klippy:connect', self._handle_connect)
+        # Prefix used when looking up per-toolhead sensors.
+        # With default 'mmu', looks for: mmu_toolhead_N, mmu_extruder_N, mmu_tension_N
+        self.sensor_prefix = config.get('sensor_prefix', 'mmu')
 
         self.gcode.register_command(
             'SET_MMU_EXTRUDER', self.cmd_SET_MMU_EXTRUDER,
             desc="Dynamically switch Happy Hare's active extruder and sensors"
         )
 
-    def _handle_connect(self):
-        """Snapshot the HH sensor state after all objects are ready."""
-        mmu = self.printer.lookup_object('mmu', None)
-        if mmu is None:
-            return
-        snapshot_keys = [
-            mmu.SENSOR_EXTRUDER_ENTRY,
-            mmu.SENSOR_TOOLHEAD,
-            mmu.SENSOR_TENSION,
-            mmu.SENSOR_COMPRESSION,
-        ]
-        for key in snapshot_keys:
-            sensor = mmu.sensor_manager.all_sensors.get(key)
-            if sensor is not None:
-                self._mmu_sensor_snapshot[key] = sensor
-        logging.info("MMU Toolchanger Bridge: Snapshotted %d MMU sensors for '%s'"
-                     % (len(self._mmu_sensor_snapshot), self.mmu_extruder_name))
+    def _get_suffix(self, extruder_name):
+        """Derive numeric suffix from extruder name.
+        'extruder' -> '0',  'extruder1' -> '1',  'extruder2' -> '2', etc.
+        """
+        return extruder_name.replace('extruder', '') or '0'
+
+    def _lookup_sensor(self, name):
+        """Look up a filament_switch_sensor by name, returning None if absent."""
+        return self.printer.lookup_object(
+            "filament_switch_sensor %s" % name, None)
 
     def cmd_SET_MMU_EXTRUDER(self, gcmd):
         mmu = self.printer.lookup_object('mmu', None)
@@ -84,9 +78,8 @@ class MmuToolchangerBridge:
             mmu.mmu_extruder_stepper = new_stepper
 
             # --- 3. Update extruder stepper on homing-related gear rail endstops ---
-            # The toolhead, compression, and tension extra endstops have an extruder
-            # stepper added so that homing moves stop the extruder rapidly. We need
-            # to keep this pointing at the correct (now-active) extruder.
+            # The toolhead, compression, and tension extra endstops need to stop
+            # the active extruder stepper rapidly during homing moves.
             if mmu.mmu_machine.homing_extruder:
                 new_mcu_stepper = getattr(new_stepper, 'stepper', None)
                 if new_mcu_stepper is None and hasattr(new_stepper, 'get_steppers'):
@@ -99,17 +92,17 @@ class MmuToolchangerBridge:
                         mmu.SENSOR_COMPRESSION,
                         mmu.SENSOR_TENSION,
                     }
-                    gear_stepper_set = {
+                    gear_stepper_ids = {
                         id(s) for s in mmu.gear_rail.steppers
                         if hasattr(s, 'get_name')
                     }
                     for (mcu_endstop, name) in mmu.gear_rail.extra_endstops:
                         if name in extruder_endstop_names:
                             if hasattr(mcu_endstop, 'steppers'):
-                                # Keep gear steppers; replace extruder stepper
+                                # Keep gear steppers, replace extruder stepper
                                 mcu_endstop.steppers = [
                                     s for s in mcu_endstop.steppers
-                                    if id(s) in gear_stepper_set
+                                    if id(s) in gear_stepper_ids
                                 ] + [new_mcu_stepper]
                             elif hasattr(mcu_endstop, 'add_stepper'):
                                 try:
@@ -118,39 +111,32 @@ class MmuToolchangerBridge:
                                     pass
 
             # --- 4. Swap sensors in HH's live all_sensors dict ---
-            if extruder_name == self.mmu_extruder_name:
-                # Switching back to the MMU toolhead: restore original HH sensors
-                for key, sensor in self._mmu_sensor_snapshot.items():
-                    mmu.sensor_manager.all_sensors[key] = sensor
-            else:
-                # Switching to a non-MMU toolhead (e.g. T0 on 'extruder'):
-                # Look up per-toolhead sensors by convention:
-                #   filament_switch_sensor {extruder_name}_toolhead_sensor
-                #   filament_switch_sensor {extruder_name}_extruder_sensor
-                th_sensor = self.printer.lookup_object(
-                    "filament_switch_sensor %s_toolhead_sensor" % extruder_name, None)
-                ex_sensor = self.printer.lookup_object(
-                    "filament_switch_sensor %s_extruder_sensor" % extruder_name, None)
+            # Derive suffix: 'extruder' -> '0', 'extruder1' -> '1', etc.
+            suffix = self._get_suffix(extruder_name)
+            p = self.sensor_prefix  # e.g. 'mmu'
 
-                if th_sensor:
-                    mmu.sensor_manager.all_sensors[mmu.SENSOR_TOOLHEAD] = th_sensor
+            # Map of HH sensor key -> filament_switch_sensor name to look up
+            sensor_map = {
+                mmu.SENSOR_EXTRUDER_ENTRY: "%s_extruder_%s" % (p, suffix),
+                mmu.SENSOR_TOOLHEAD:       "%s_toolhead_%s" % (p, suffix),
+                mmu.SENSOR_TENSION:        "%s_tension_%s"  % (p, suffix),
+            }
+
+            for hh_key, sensor_name in sensor_map.items():
+                sensor_obj = self._lookup_sensor(sensor_name)
+                if sensor_obj is not None:
+                    mmu.sensor_manager.all_sensors[hh_key] = sensor_obj
                 else:
-                    mmu.sensor_manager.all_sensors.pop(mmu.SENSOR_TOOLHEAD, None)
-
-                if ex_sensor:
-                    mmu.sensor_manager.all_sensors[mmu.SENSOR_EXTRUDER_ENTRY] = ex_sensor
-                else:
-                    mmu.sensor_manager.all_sensors.pop(mmu.SENSOR_EXTRUDER_ENTRY, None)
-
-                # Sync feedback sensors (tension/compression) are on the MMU side only;
-                # remove them so HH doesn't expect them on this toolhead.
-                mmu.sensor_manager.all_sensors.pop(mmu.SENSOR_TENSION, None)
-                mmu.sensor_manager.all_sensors.pop(mmu.SENSOR_COMPRESSION, None)
+                    # Sensor not defined for this toolhead — remove the slot so
+                    # HH doesn't try to use it
+                    mmu.sensor_manager.all_sensors.pop(hh_key, None)
 
             # Refresh HH's viewable_sensors for the current gate/UI
             mmu.sensor_manager.reset_active_gate(mmu.gate)
 
-            mmu.log_info("MMU: Active extruder switched to '%s'" % extruder_name)
+            mmu.log_info(
+                "MMU: Active extruder switched to '%s' (sensor suffix: %s)"
+                % (extruder_name, suffix))
 
         except Exception as e:
             import traceback
