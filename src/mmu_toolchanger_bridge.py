@@ -29,29 +29,35 @@ class MmuToolchangerBridge:
         
         # 2. Update mmu_toolhead.mmu_extruder_stepper
         try:
-            # Happy Hare uses MmuExtruderStepper to wrap the actual stepper
-            try:
-                from . import mmu_machine
-            except ImportError:
-                import mmu_machine
-            MmuExtruderStepper = mmu_machine.MmuExtruderStepper
+            # We don't need to wrap with MmuExtruderStepper at runtime unless using stallguard
+            # Klipper has already established the pins, recreating causes a pin conflict.
+            # Just grab the existing Klipper ExtruderStepper object.
+            printer_extruder = self.printer.lookup_object(extruder_name, None)
+            if printer_extruder is None:
+                raise self.printer.command_error("Could not find extruder '%s'" % extruder_name)
+                
+            if not hasattr(printer_extruder, 'extruder_stepper'):
+                raise self.printer.command_error("Extruder '%s' has no stepper attached" % extruder_name)
+                
+            new_stepper = printer_extruder.extruder_stepper
             
-            # Get the exact config section for the target extruder
-            # mmu.config is the ConfigWrapper for [mmu], providing getsection()
-            extruder_config = mmu.config.getsection(extruder_name)
-            
-            new_mmu_stepper = MmuExtruderStepper(extruder_config, mmu.gear_rail)
-            mmu.mmu_toolhead.mmu_extruder_stepper = new_mmu_stepper
-            mmu.mmu_extruder_stepper = new_mmu_stepper
+            mmu.mmu_toolhead.mmu_extruder_stepper = new_stepper
+            mmu.mmu_extruder_stepper = new_stepper
             
             # 3. Synchronize gear rail endstops if necessary
             # The sensor manager holds references to steppers for endstop stopping
             for endstop in mmu.gear_rail.get_endstops():
                 name = endstop.get_name()
                 if name in [mmu.SENSOR_TOOLHEAD, mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_COMPRESSION, mmu.SENSOR_TENSION]:
-                    # Update the stepper associated with this endstop
+                    # Update the MCU stepper associated with this endstop
                     # This ensures rapid stopping on synced homing for the new extruder
-                    endstop.steppers = [new_mmu_stepper.stepper]
+                    mcu_stepper = getattr(new_stepper, 'stepper', None)
+                    if mcu_stepper:
+                        endstop.steppers = [mcu_stepper]
+                    elif hasattr(new_stepper, 'get_steppers'):
+                        steppers = new_stepper.get_steppers()
+                        if steppers:
+                            endstop.steppers = [steppers[0]]
             
             # 4. Swap sensors in sensor_manager.all_sensors
             # We expect sensors named mmu_extruder_N, mmu_toolhead_N, and mmu_tension_N to exist
