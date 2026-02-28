@@ -47,12 +47,13 @@ import logging
 import re
 
 class BridgeProxyEndstop:
-    def __init__(self, mmu, native_sensor, name):
+    def __init__(self, mmu, proxy_sensor, name):
         self.mmu = mmu
-        self.printer = mmu.printer
-        self.reactor = mmu.printer.get_reactor()
-        self.sensor = native_sensor
+        self.proxy_sensor = proxy_sensor # This is a BridgeProxySensor instance
         self.name = name
+        self.sensor = proxy_sensor.sensor # Real Klipper sensor object
+        self.runout_helper = proxy_sensor.runout_helper # proxy_sensor's ProxyHelper
+        self.reactor = mmu.printer.get_reactor()
         self._pin = "proxy"
         self.completion = None
 
@@ -71,8 +72,8 @@ class BridgeProxyEndstop:
         return None
 
     def query_endstop(self, print_time):
-        # Return state from native sensor. Note: filament_switch_sensor.get_status() returns a dict.
-        return 1 if self.sensor.get_status(0).get('filament_detected') else 0
+        # Use our helper's logical state (handles inversion)
+        return 1 if self.proxy_sensor.runout_helper.filament_present else 0
 
     def home_start(self, print_time, sample_time, sample_count, rest_time, triggered):
         self.completion = self.reactor.completion()
@@ -82,14 +83,13 @@ class BridgeProxyEndstop:
 
     def _check_sensor(self, triggered):
         # If the sensor matches our target 'triggered' state, complete.
-        status = self.sensor.get_status(0)
-        current_state = 1 if status.get('filament_detected') else 0
-        logging.info("MMU Bridge Proxy [%s]: State=%d, Target=%d, Raw=%s" % (self.name, current_state, triggered, str(status)))
-        if bool(current_state) == bool(triggered):
-            self.completion.complete(True)
-        else:
-            # Poll every 10ms. Preload/Homing is slow so this is fine.
-            self.reactor.register_timer(lambda e: self._check_sensor(triggered), self.reactor.monotonic() + 0.01)
+        if self.proxy_sensor.runout_helper.filament_present == bool(triggered):
+            if not self.completion.completed():
+                self.completion.complete(0)
+            return self.reactor.NEVER
+
+        # Check again in 10ms
+        self.reactor.register_timer(lambda et: self._check_sensor(triggered), self.reactor.monotonic() + 0.01)
         return self.reactor.NEVER
 
     def home_wait(self, home_end_time):
@@ -117,6 +117,10 @@ class BridgeProxySensor:
 
             @property
             def filament_present(self):
+                # Prefer the logical status from Klipper's runout_helper (handles '!')
+                if self.native_helper and hasattr(self.native_helper, 'filament_present'):
+                    return self.native_helper.filament_present
+                # Fallback to the raw status if no helper
                 return self.sensor.get_status(0).get('filament_detected', False)
 
             def enable_button_feedback(self, enable):
@@ -229,10 +233,17 @@ class MmuToolchangerBridge:
                 name = match.group(2)
                 found_sensors.append((section, name))
 
+        # Store BridgeProxySensor instances for later use
+        proxy_sensors = {}
+
         for section, name in found_sensors:
             sensor_obj = self.printer.lookup_object(section, None)
             if not sensor_obj:
                 continue
+
+            # Create BridgeProxySensor instance
+            proxy_s = BridgeProxySensor(name, sensor_obj)
+            proxy_sensors[name] = proxy_s
 
             # Determine sensor type and unit index if applicable
             # Patterns: mmu_gate_0, mmu_pre_gate_0, mmu_extruder_0, mmu_toolhead_0, etc.
@@ -243,13 +254,12 @@ class MmuToolchangerBridge:
             # 1. Register as a Proxy Endstop in HH's Gear Rail so hmove/calibration works.
             # We add it if HH hasn't already registered a real hardware endstop with this name.
             if name not in mmu.gear_rail.get_extra_endstop_names():
-                proxy_es = BridgeProxyEndstop(mmu, sensor_obj, name)
+                proxy_es = BridgeProxyEndstop(mmu, proxy_s, name) # Pass the BridgeProxySensor instance
                 mmu.gear_rail.add_extra_endstop("mock", name, register=True, mcu_endstop=proxy_es)
                 logging.info("MMU Toolchanger Bridge: Registered %s as gear rail ProxyEndstop" % name)
 
             # 2. Register as a Proxy Sensor in HH's Sensor Manager for UI/Logic.
             if name not in sensor_manager.all_sensors:
-                proxy_s = BridgeProxySensor(name, sensor_obj)
                 sensor_manager.all_sensors[name] = proxy_s
                 logging.info("MMU Toolchanger Bridge: Registered %s as proxy Sensor object" % name)
 
@@ -259,10 +269,10 @@ class MmuToolchangerBridge:
             if i is not None and "gate" in sensor_type and "pre_gate" not in sensor_type:
                 gear_name = "%s_%d" % (mmu.SENSOR_GEAR_PREFIX, i)
                 if gear_name not in mmu.gear_rail.get_extra_endstop_names():
-                    proxy_es = BridgeProxyEndstop(mmu, sensor_obj, gear_name)
+                    proxy_es = BridgeProxyEndstop(mmu, proxy_s, gear_name) # Pass the BridgeProxySensor instance
                     mmu.gear_rail.add_extra_endstop("mock", gear_name, register=True, mcu_endstop=proxy_es)
                 if gear_name not in sensor_manager.all_sensors:
-                    sensor_manager.all_sensors[gear_name] = BridgeProxySensor(gear_name, sensor_obj)
+                    sensor_manager.all_sensors[gear_name] = proxy_s # Use the same proxy_s for the gear sensor
 
         # 2. Ensure generic HH endstop names (mmu_gate, etc.) have Mock fallbacks if missing.
         mock_es = BridgeMockEndstop(self.reactor)
@@ -554,23 +564,16 @@ class MmuToolchangerBridge:
         for name in sorted(mmu.sensor_manager.all_sensors.keys()):
             s = mmu.sensor_manager.all_sensors[name]
             helper = getattr(s, 'runout_helper', None)
-            detected = False
+            logical_state = "unknown"
+            raw_state = "unknown"
             if helper:
-                detected = helper.filament_present
+                logical_state = "DETECTED" if helper.filament_present else "EMPTY"
+                # Access the native Klipper status for comparison
+                status = helper.sensor.get_status(0)
+                raw_state = "DETECTED" if status.get('filament_detected') else "EMPTY"
             
-            # Find associated endstop to show pin
-            es_info = "no_endstop"
-            for es, es_name in mmu.gear_rail.extra_endstops:
-                if es_name == name:
-                    mcu_name = es.get_mcu().get_name() if hasattr(es, 'get_mcu') else es.__class__.__name__
-                    pin = getattr(es, '_pin', 'unknown')
-                    state = "unknown"
-                    if hasattr(es, 'query_endstop'):
-                        state = "TRIGGERED" if es.query_endstop(0) else "OPEN"
-                    es_info = "pin:%s, mcu:%s [%s]" % (pin, mcu_name, state)
-                    break
-            
-            gcmd.respond_info("  %s -> %s (%s)" % (name, "DETECTED" if detected else "EMPTY", es_info))
+            pin = getattr(helper, '_pin', 'proxy')
+            gcmd.respond_info("  %s -> Logical:%s, Raw:%s (pin:%s)" % (name, logical_state, raw_state, pin))
 
     # -------------------------------------------------------------------------
 
