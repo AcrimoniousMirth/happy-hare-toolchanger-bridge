@@ -1,92 +1,54 @@
 # Happy Hare Toolchanger Bridge
 
-This is an add-on for [Happy Hare](https://github.com/moggieuk/Happy-Hare) that enables dynamic extruder and sensor switching for multi-toolhead setups (e.g., Klipper-Toolchanger).
+A companion library and configuration set for integrating **Happy Hare MMU** with **Klipper-Toolchanger** (and multi-toolhead setups).
 
-## Description
+## Purpose
 
-Happy Hare natively assumes a single physical extruder. This bridge allows you to dynamically switch which extruder and toolhead sensors Happy Hare uses at runtime. This is essential for setups where different tools reside on different physical toolheads with their own extruders and sensors.
+Standard Happy Hare is designed for a single physical extruder. This bridge allows Happy Hare to:
+1.  **Dynamically switch extruders**: Swap the active `[extruder]` and `[mmu_extruder_stepper]` at runtime.
+2.  **Shared Sensors**: Dynamically swap `filament_switch_sensor` objects (extruder, toolhead, and tension sensors) based on the active toolhead.
+3.  **Cross-Toolhead Loading**: Coordinates filament unloading from one toolhead and loading into another during a physical tool change.
+
+## Implementation Design (Why and Where)
+
+### 1. Deterministic Loading Order (`mmu.cfg`)
+Klipper's `[include]` system can be non-deterministic when using globs like `*.cfg`. This bridge requires a specific sequence:
+- **Base Macros** must be registered before the bridge can hook into them.
+- **Hardware Pins** must be defined before sensors are initialized.
+
+**Recommendation**: Use a "Master Config" file (see `examples/mmu_example.cfg`) and include it explicitly in your `printer.cfg`.
+
+### 2. Hooks vs. Renames (`mmu_toolchanger_bridge.cfg`)
+Traditional G-code overrides use `rename_existing`. However, in complex setups, this often leads to "Command not found" errors due to registration timing.
+
+**This bridge uses Happy Hare's built-in Extension Hooks** (e.g., `user_pre_initialize_extension`). 
+- **Why?** It is 100% stable and survives Happy Hare software updates. 
+- **Scripted Fix**: We use a `[delayed_gcode]` to automatically inject our bridge logic into Happy Hare's startup sequence, even if your base configuration files get reverted during an update.
 
 ## Installation
 
-### Automatic installation
-
-The module can be installed into an existing Klipper installation with the included install script:
-
-```bash
-cd ~
-git clone https://github.com/AcrimoniousMirth/happy-hare-toolchanger-bridge.git
-cd happy-hare-toolchanger-bridge
-./install.sh
-```
-
-### Manual installation
-
-1.  Clone the repository to your home directory.
-2.  Link the extension:
+1.  Clone this repository to your printer:
     ```bash
-    ln -sf ~/happy-hare-toolchanger-bridge/src/mmu_toolchanger_bridge.py ~/klipper/klippy/extras/mmu_toolchanger_bridge.py
+    git clone https://github.com/AcrimoniousMirth/happy-hare-toolchanger-bridge.git ~/happy-hare-toolchanger-bridge
     ```
-3.  Restart Klipper.
+2.  Run the installation script:
+    ```bash
+    cd ~/happy-hare-toolchanger-bridge && ./install.sh
+    ```
+3.  Add the bridge to your MMU configuration (see `examples/`).
 
----
+## Configuration Prerequisites
 
-## Configuration
+### Sensor Naming
+The bridge expects sensors to follow a specific naming convention:
+- **T0 Path**: `mmu_extruder_0`, `mmu_toolhead_0`, `mmu_tension_0`
+- **T1 Path**: `mmu_extruder_1`, `mmu_toolhead_1`, `mmu_tension_1`
 
-### 1. Enable the Bridge
-Add the following to your `printer.cfg` (or an included file like `mmu.cfg`):
-
+### Hardware Config
+In your `mmu_hardware.cfg`, leave the following blank:
 ```ini
-[mmu_toolchanger_bridge]
+[mmu_sensors]
+extruder_switch_pin: 
+toolhead_switch_pin: 
 ```
-
-### 2. Coordination Macros
-The `install.sh` script automatically links the coordination macros into your printer's configuration directory. Include them in your `printer.cfg` (or `mmu.cfg`):
-
-```ini
-[include mmu_toolchanger_logic.cfg]
-```
-
-### 3. Example Configurations
-Full examples for hardware mapping and main MMU integration are provided in the `examples/` directory of this repository for reference.
-
-### 4. Sensor Naming Convention
-The bridge expects sensors to be defined as standard Klipper `[filament_switch_sensor]` objects with specific names. **Do not** define these in the `[mmu_sensors]` section of Happy Hare.
-
-In your hardware config, define them as:
-- `mmu_extruder_0`, `mmu_toolhead_0`, `mmu_tension_0` (for `extruder`)
-- `mmu_extruder_1`, `mmu_toolhead_1`, `mmu_tension_1` (for `extruder1`)
-
-```ini
-[filament_switch_sensor mmu_extruder_0]
-switch_pin: ^Tool0:PA13
-pause_on_runout: False
-
-[filament_switch_sensor mmu_toolhead_0]
-switch_pin: ^Tool0:PA8
-pause_on_runout: False
-
-[filament_switch_sensor mmu_tension_0]
-switch_pin: ^Tool0:PA14
-pause_on_runout: False
-```
-
-The bridge will automatically swap these into Happy Hare's internal manager when `SET_MMU_EXTRUDER` is called.
-
-### 5. Recommended Parameters (`mmu_parameters.cfg`)
-While the bridge dynamically manages the extruder, you should set a safe default in your `mmu_parameters.cfg`:
-
-```ini
-extruder: extruder   # The default physical extruder name
-```
-
-The bridge's `MMU_START_SETUP` macro will automatically override this at startup based on which tool is currently physically loaded.
-
----
-
-## How it Works
-
-The bridge intercepts toolchange requests and:
-1.  Updates Happy Hare's internal `extruder_name`.
-2.  Re-initializes the `MmuExtruderStepper` wrapper to point to the active physical extruder.
-3.  Dynamically re-routes `gear_rail` endstops to the active extruder stepper for synchronized homing/loading.
-4.  Swaps sensor objects in Happy Hare's `sensor_manager` to match the active toolhead.
+The bridge will dynamically swap your toolhead-specific sensors into these slots in real-time.
