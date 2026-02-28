@@ -42,6 +42,52 @@
 
 import logging
 
+class BridgeProxyEndstop:
+    def __init__(self, mmu, native_sensor, name):
+        self.mmu = mmu
+        self.printer = mmu.printer
+        self.reactor = mmu.printer.get_reactor()
+        self.sensor = native_sensor
+        self.name = name
+        self._pin = "proxy"
+        self.completion = None
+
+    def add_stepper(self, stepper):
+        pass
+
+    def get_steppers(self):
+        # We must return a list with at least one stepper so HomingMove doesn't ignore us.
+        # We return the Gear Rail's steppers.
+        return self.mmu.gear_rail.steppers
+
+    def get_mcu(self):
+        # Return the stepper's MCU to satisfy some checks
+        if self.mmu.gear_rail.steppers:
+            return self.mmu.gear_rail.steppers[0].get_mcu()
+        return None
+
+    def query_endstop(self, print_time):
+        # Return state from native sensor. Note: filament_switch_sensor.get_status() returns a dict.
+        return 1 if self.sensor.get_status().get('filament_detected') else 0
+
+    def home_start(self, print_time, sample_time, sample_count, rest_time, triggered):
+        self.completion = self.reactor.completion()
+        self._check_sensor(triggered)
+        return self.completion
+
+    def _check_sensor(self, triggered):
+        # If the sensor matches our target 'triggered' state, complete.
+        current_state = self.query_endstop(0)
+        if bool(current_state) == bool(triggered):
+            self.completion.complete(True)
+        else:
+            # Poll every 10ms. Preload/Homing is slow so this is fine.
+            self.reactor.register_callback(lambda e: self._check_sensor(triggered), delay=0.01)
+
+    def home_wait(self, home_end_time):
+        self.completion.wait()
+        return home_end_time
+
 class BridgeMockEndstop:
     def __init__(self, reactor):
         self.reactor = reactor
@@ -120,44 +166,52 @@ class MmuToolchangerBridge:
         """Save HH defaults and auto-apply T0 mode if T0 is already active at boot."""
         mmu = self.printer.lookup_object('mmu', None)
         if mmu is None:
+            logging.info("MMU Toolchanger Bridge: MMU object not found, skipping sensor registration")
             return self.reactor.NEVER
 
-        # 1. Register all per-toolhead sensors as HH Gear Rail endstops.
-        # HH only automatically registers standard sensor names (e.g. mmu_extruder) if defined in [mmu_sensors].
-        # We must manually find native Klipper sensors (mmu_extruder_0, mmu_toolhead_0, etc.) in the configfile
-        # and register them so that the gear motor can stop on them during homing/calibration.
-        try:
-            configfile = self.printer.lookup_object('configfile', None)
-            if configfile:
-                # Klipper's configfile module stores the parsed status in 'config' or 'settings'
-                status = configfile.get_status(self.reactor.monotonic())
-                
-                # Depending on Klipper version, it might be under 'config' or 'settings' and contains dictionaries
-                config_dict = status.get('config', status.get('settings', {}))
-                
-                p = self.sensor_prefix
-                logging.info("MMU Toolchanger Bridge: scanning for native sensors with prefix '%s_'" % p)
-                
-                for section in config_dict.keys():
-                    if section.startswith("filament_switch_sensor ") or section.startswith("mmu_sensor "):
-                        name = section.split(" ", 1)[1]
-                        if name.startswith("%s_" % p) and any(x in name for x in ["extruder_", "toolhead_", "pre_gate_", "gear_", "gate_", "tension_", "compression_"]):
-                            logging.info("MMU Toolchanger Bridge: checking native sensor '%s'" % name)
-                            if name not in mmu.gear_rail.get_extra_endstop_names():
-                                sensor_pin = config_dict[section].get('switch_pin', None)
-                                logging.info("MMU Toolchanger Bridge: native sensor '%s' resolved pin: %s" % (name, sensor_pin))
-                                
-                                if sensor_pin:
-                                    try:
-                                        ppins = self.printer.lookup_object('pins')
-                                        pin_params = ppins.parse_pin(sensor_pin, True, True)
-                                        share_name = "%s:%s" % (pin_params['chip_name'], pin_params['pin'])
-                                        ppins.allow_multi_use_pin(share_name)
+        sensor_manager = mmu.sensor_manager
 
-                                        mmu.gear_rail.add_extra_endstop(sensor_pin, name)
-                                        logging.info("MMU Toolchanger Bridge: Registered %s as gear rail endstop" % name)
-                                    except Exception as e:
-                                        logging.warning("MMU Toolchanger Bridge: Failed to register %s: %s" % (name, str(e)))
+        # 1. Scan Klipper config for native sensors we want to "bridge" into Happy Hare.
+        # We look for [filament_switch_sensor mmu_X] patterns.
+        try:
+            configfile = self.printer.lookup_object('configfile')
+            # Extract configuration dictionary
+            config = configfile.get_status(None).get('config')
+            if not config:
+                 config = configfile.get_status(None).get('settings')
+
+            if config:
+                for section in config.keys():
+                    if section.startswith('filament_switch_sensor '):
+                        name = section.split(' ', 1)[1]
+                        # Patterns to match: mmu_gate_N, mmu_extruder_N, mmu_toolhead_N, mmu_tension_N
+                        # and also mmu_pre_gate_N, mmu_gear_N, mmu_compression_N
+                        match = re.match(r'^%s_(gate|extruder|toolhead|tension|pre_gate|gear|compression)_(\d+)$' % self.sensor_prefix, name)
+                        if match:
+                            sensor_type = match.group(1)
+                            i = int(match.group(2))
+                            
+                            # Determine if this sensor already exists in MMU's all_sensors
+                            # (e.g., if it was defined in [mmu_sensors] and HH already registered it)
+                            exists = False
+                            if name in sensor_manager.all_sensors:
+                                exists = True
+                            
+                            if not exists:
+                                sensor_obj = self.printer.lookup_object(section, None)
+                                if sensor_obj:
+                                    # Register as a proxy endstop in gear_rail.
+                                    # We use BridgeProxyEndstop to avoid late-registering a real MCU endstop (which crashes Klipper).
+                                    proxy = BridgeProxyEndstop(mmu, sensor_obj, name)
+                                    mmu.gear_rail.add_extra_endstop("mock", name, register=True, mcu_endstop=proxy)
+                                    logging.info("MMU Toolchanger Bridge: Registered %s as proxy gear rail endstop" % name)
+
+                                    # Special case: Map gate to gear rail endstop (important for preload)
+                                    if sensor_type == 'gate':
+                                        gear_name = "%s_%d" % (mmu.SENSOR_GEAR_PREFIX, i)
+                                        if gear_name not in mmu.gear_rail.get_extra_endstop_names():
+                                            mmu.gear_rail.add_extra_endstop("mock", gear_name, register=True, mcu_endstop=proxy)
+
         except Exception as e:
             logging.warning("MMU Toolchanger Bridge: Exception scanning for native sensors: %s" % str(e))
 
