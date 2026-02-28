@@ -113,10 +113,14 @@ class MmuToolchangerBridge:
     # -------------------------------------------------------------------------
 
     def _handle_connect(self):
+        """Register a slightly delayed callback to ensure HH has fully initialized."""
+        self.reactor.register_timer(self._delayed_connect, self.reactor.monotonic() + 0.5)
+
+    def _delayed_connect(self, eventtime):
         """Save HH defaults and auto-apply T0 mode if T0 is already active at boot."""
         mmu = self.printer.lookup_object('mmu', None)
         if mmu is None:
-            return
+            return self.reactor.NEVER
 
         # 1. Register all per-toolhead sensors as HH Gear Rail endstops.
         # HH only automatically registers standard sensor names (e.g. mmu_extruder).
@@ -136,7 +140,6 @@ class MmuToolchangerBridge:
                         sensor_pin = sensor.runout_helper.switch_pin
                     elif hasattr(sensor, '_pin'):
                         sensor_pin = sensor._pin
-                    
                     if sensor_pin:
                         try:
                             mmu.gear_rail.add_extra_endstop(sensor_pin, name)
@@ -193,6 +196,8 @@ class MmuToolchangerBridge:
         # extruder at startup.
         if mmu.extruder_name == self.t0_extruder:
             self._apply_settings(mmu, self.t0_extruder)
+
+        return self.reactor.NEVER
 
     # -------------------------------------------------------------------------
 
