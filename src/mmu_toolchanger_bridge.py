@@ -125,9 +125,19 @@ class MmuToolchangerBridge:
         # 2. Ensure generic HH endstop names exist in gear_rail so they can be swapped.
         # If the MMU doesn't have an extruder sensor, "extruder" won't be in the list,
         # which causes MMU_CALIBRATE_BOWDEN to fail. We add a 'mock' if missing.
-        for name in [mmu.SENSOR_GATE, mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_TOOLHEAD]:
-            if name not in mmu.gear_rail.get_extra_endstop_names():
-                mmu.gear_rail.add_extra_endstop("mock", name, register=True)
+        # We also need to add unit-prefixed versions (e.g. unit_1_extruder) because
+        # HH looks those up in multi-unit configurations (T1-T5).
+        generic_names = [mmu.SENSOR_GATE, mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_TOOLHEAD]
+        for name in generic_names:
+            names_to_check = [name]
+            if mmu.mmu_machine.num_units > 1:
+                # Add unit prefixes for all possible units (T1-T5 belong to units >= 1)
+                for i in range(1, mmu.mmu_machine.num_units):
+                    names_to_check.append(sensor_manager.get_unit_sensor_name(name, i))
+
+            for n in names_to_check:
+                if n not in mmu.gear_rail.get_extra_endstop_names():
+                    mmu.gear_rail.add_extra_endstop("mock", n, register=True)
 
         # 3. Save originals so we can restore them when T1+ is active
         self._orig_settings = {
@@ -252,13 +262,19 @@ class MmuToolchangerBridge:
             new_endstops = []
             registered_es = mmu.gear_rail.extra_endstops
             for es, name in registered_es:
-                if name == mmu.SENSOR_GATE:
+                # For T0 (unit 0), HH might look up "extruder" or "unit_0_extruder"
+                # (though bridge usually forces unit_selected to match)
+                target_gate = mmu.SENSOR_GATE
+                target_extruder = mmu.SENSOR_EXTRUDER_ENTRY
+                target_toolhead = mmu.SENSOR_TOOLHEAD
+
+                if name in [target_gate, mmu.sensor_manager.get_unit_sensor_name(target_gate, 0)]:
                     found_es = next((e[0] for e in registered_es if e[1] == pre_gate_name), es)
                     new_endstops.append((found_es, name))
-                elif name == mmu.SENSOR_EXTRUDER_ENTRY:
+                elif name in [target_extruder, mmu.sensor_manager.get_unit_sensor_name(target_extruder, 0)]:
                     found_es = next((e[0] for e in registered_es if e[1] == extruder_name_es), es)
                     new_endstops.append((found_es, name))
-                elif name == mmu.SENSOR_TOOLHEAD:
+                elif name in [target_toolhead, mmu.sensor_manager.get_unit_sensor_name(target_toolhead, 0)]:
                     found_es = next((e[0] for e in registered_es if e[1] == toolhead_name_es), es)
                     new_endstops.append((found_es, name))
                 else:
