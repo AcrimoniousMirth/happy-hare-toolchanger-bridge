@@ -89,6 +89,24 @@ class BridgeProxyEndstop:
         self.completion.wait()
         return home_end_time
 
+class BridgeProxySensor:
+    def __init__(self, name, native_sensor):
+        self.name = name
+        self.sensor = native_sensor
+        # Happy Hare logic expects a runout_helper with filament_present and sensor_enabled
+        # We wrap the native sensor's status
+        class ProxyHelper:
+            def __init__(self, sensor):
+                self.sensor = sensor
+                self.sensor_enabled = True
+            @property
+            def filament_present(self):
+                return self.sensor.get_status().get('filament_detected', False)
+        self.runout_helper = ProxyHelper(native_sensor)
+
+    def get_status(self, eventtime):
+        return self.sensor.get_status()
+
 class BridgeMockEndstop:
     def __init__(self, reactor):
         self.reactor = reactor
@@ -201,17 +219,23 @@ class MmuToolchangerBridge:
                             if not exists:
                                 sensor_obj = self.printer.lookup_object(section, None)
                                 if sensor_obj:
-                                    # Register as a proxy endstop in gear_rail.
-                                    # We use BridgeProxyEndstop to avoid late-registering a real MCU endstop (which crashes Klipper).
-                                    proxy = BridgeProxyEndstop(mmu, sensor_obj, name)
-                                    mmu.gear_rail.add_extra_endstop("mock", name, register=True, mcu_endstop=proxy)
+                                    # 1. Register as a proxy endstop in gear_rail so hmove works.
+                                    proxy_es = BridgeProxyEndstop(mmu, sensor_obj, name)
+                                    mmu.gear_rail.add_extra_endstop("mock", name, register=True, mcu_endstop=proxy_es)
                                     logging.info("MMU Toolchanger Bridge: Registered %s as proxy gear rail endstop" % name)
+
+                                    # 2. Add as a proxy sensor to sensor_manager so HH logic (check_gate_sensor) works.
+                                    proxy_s = BridgeProxySensor(name, sensor_obj)
+                                    sensor_manager.all_sensors[name] = proxy_s
+                                    logging.info("MMU Toolchanger Bridge: Registered %s as proxy sensor object" % name)
 
                                     # Special case: Map gate to gear rail endstop (important for preload)
                                     if sensor_type == 'gate':
                                         gear_name = "%s_%d" % (mmu.SENSOR_GEAR_PREFIX, i)
                                         if gear_name not in mmu.gear_rail.get_extra_endstop_names():
-                                            mmu.gear_rail.add_extra_endstop("mock", gear_name, register=True, mcu_endstop=proxy)
+                                            mmu.gear_rail.add_extra_endstop("mock", gear_name, register=True, mcu_endstop=proxy_es)
+                                        if gear_name not in sensor_manager.all_sensors:
+                                            sensor_manager.all_sensors[gear_name] = proxy_s
 
         except Exception as e:
             logging.warning("MMU Toolchanger Bridge: Exception scanning for native sensors: %s" % str(e))
@@ -436,7 +460,7 @@ class MmuToolchangerBridge:
             mmu.SENSOR_EXTRUDER_ENTRY: "%s_extruder_%s" % (p, suffix),
             mmu.SENSOR_TOOLHEAD:       "%s_toolhead_%s" % (p, suffix),
             mmu.SENSOR_TENSION:        "%s_tension_%s"  % (p, suffix),
-            mmu.SENSOR_GATE:           "%s_pre_gate_0"  % p if is_t0 else None,
+            mmu.SENSOR_GATE:           "%s_gate_%s"     % (p, suffix) if is_t0 else None,
         }
 
         # T0 Preload Sensor Logic:
