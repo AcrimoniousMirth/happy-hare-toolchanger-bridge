@@ -10,8 +10,11 @@
 #   1. mmu.extruder_name and mmu_extruder_stepper references
 #   2. The extruder stepper on gear_rail extra endstops (for rapid stop on homing)
 #   3. HH's live sensor dict (all_sensors) to reflect the active toolhead's sensors
-#   4. mmu.bowden_homing_max and mmu.gate_homing_max to match the active toolhead's
-#      bowden tube length (T0 has a much longer path than T1-T5)
+#   4. mmu.bowden_homing_max and mmu.gate_homing_max to match the toolhead sensors.
+#   5. mmu.gate_homing_endstop/extruder_homing_endstop set to SENSOR_GATE/SENSOR_EXTRUDER.
+#
+#   Physical Sensor Chain (T0 Mode):
+#   [Pre-Gate] --- (t0_gate_preload_max) ---> [Gate_0] --- (t0_bowden_max) ---> [Extruder_0]
 #
 # Sensor lookup uses a numeric suffix derived from the extruder name:
 #   extruder  -> suffix 0 -> mmu_extruder_0, mmu_toolhead_0, mmu_tension_0
