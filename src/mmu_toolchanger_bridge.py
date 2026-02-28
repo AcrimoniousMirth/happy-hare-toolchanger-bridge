@@ -239,13 +239,18 @@ class MmuToolchangerBridge:
 
         # 1. Proactively discover all native Klipper sensors that should be bridged.
         # We look for any Klipper object that looks like an MMU sensor.
-        # This includes dynamically created ones by Happy Hare.
         found_sensors = []
-        for obj_name in self.printer.lookup_objects():
-            if obj_name.startswith('filament_switch_sensor %s_' % p) or \
-               obj_name.startswith('mmu_sensor %s_' % p):
-                name = obj_name.split(' ', 1)[1]
-                found_sensors.append((obj_name, name))
+        all_objects = self.printer.lookup_objects()
+        logging.info("MMU Toolchanger Bridge: Discovering sensors in Klipper objects: %s" % str(all_objects))
+        
+        for obj_name in all_objects:
+            # Match 'filament_switch_sensor mmu_...' or just 'mmu_...'
+            match = re.match(r'^(filament_switch_sensor|mmu_sensor)?\s*(%s_.*)$' % p, obj_name)
+            if match:
+                klipper_section = obj_name
+                hh_name = match.group(2)
+                found_sensors.append((klipper_section, hh_name))
+                logging.info("MMU Toolchanger Bridge: Found candidate sensor '%s' (HH name: '%s')" % (klipper_section, hh_name))
 
         # Store BridgeProxySensor instances for later use
         proxy_sensors = {}
@@ -596,16 +601,28 @@ class MmuToolchangerBridge:
                 # 2. Get Raw State
                 sensor_obj = getattr(s, 'sensor', None)
                 if sensor_obj is None:
-                    # Try to find the Klipper object directly if it's a native HH sensor
-                    helper = getattr(s, 'runout_helper', None)
+                    # Try to find the Klipper object directly (native HH sensors)
+                    possible_names = []
+                    # Try with prefix
                     klipper_name = getattr(s, 'name', name)
+                    possible_names.append(klipper_name)
                     if not klipper_name.startswith('filament_switch_sensor'):
-                        klipper_name = 'filament_switch_sensor ' + klipper_name
-                    sensor_obj = self.printer.lookup_object(klipper_name, None)
+                        possible_names.append('filament_switch_sensor ' + klipper_name)
+                    if not klipper_name.startswith('mmu_sensor'):
+                        possible_names.append('mmu_sensor ' + klipper_name)
+                    
+                    for kn in possible_names:
+                        sensor_obj = self.printer.lookup_object(kn, None)
+                        if sensor_obj:
+                            break
                 
                 if sensor_obj and hasattr(sensor_obj, 'get_status'):
                     status = sensor_obj.get_status(0)
                     raw_state = "DETECTED" if status.get('filament_detected') else "EMPTY"
+                elif sensor_obj:
+                    raw_state = "No get_status"
+                else:
+                    raw_state = "Not found in Klipper"
                 
                 # 3. Get Pin Info from extra endstops
                 for es, es_name in mmu.gear_rail.extra_endstops:
