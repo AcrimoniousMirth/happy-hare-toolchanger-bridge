@@ -78,6 +78,7 @@ class BridgeProxyEndstop:
     def _check_sensor(self, triggered):
         # If the sensor matches our target 'triggered' state, complete.
         current_state = self.query_endstop(0)
+        logging.info("MMU Bridge Proxy [%s]: State=%d, Target=%d" % (self.name, current_state, triggered))
         if bool(current_state) == bool(triggered):
             self.completion.complete(True)
         else:
@@ -491,7 +492,10 @@ class MmuToolchangerBridge:
         for es, name in mmu.gear_rail.extra_endstops:
             mcu_name = es.get_mcu().get_name() if hasattr(es, 'get_mcu') else es.__class__.__name__
             pin = getattr(es, '_pin', 'unknown')
-            gcmd.respond_info("  %s -> pin:%s, mcu:%s" % (name, pin, mcu_name))
+            state = "unknown"
+            if hasattr(es, 'query_endstop'):
+                state = "TRIGGERED" if es.query_endstop(0) else "OPEN"
+            gcmd.respond_info("  %s -> pin:%s, mcu:%s [%s]" % (name, pin, mcu_name, state))
 
         gcmd.respond_info("All Sensors (Manager Keys):")
         for name in sorted(mmu.sensor_manager.all_sensors.keys()):
