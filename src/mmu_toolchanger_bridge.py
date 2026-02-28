@@ -37,7 +37,8 @@ class MmuToolchangerBridge:
             MmuExtruderStepper = mmu_machine.MmuExtruderStepper
             
             # Get the exact config section for the target extruder
-            extruder_config = self.printer.lookup_object('configfile').get_section(extruder_name)
+            # mmu.config is the ConfigWrapper for [mmu], providing getsection()
+            extruder_config = mmu.config.getsection(extruder_name)
             
             new_mmu_stepper = MmuExtruderStepper(extruder_config, mmu.gear_rail)
             mmu.mmu_toolhead.mmu_extruder_stepper = new_mmu_stepper
