@@ -41,6 +41,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import logging
+import re
 
 class BridgeProxyEndstop:
     def __init__(self, mmu, native_sensor, name):
