@@ -74,6 +74,10 @@ class MmuToolchangerBridge:
 
         # Saved HH defaults (captured at klippy:connect)
         self._orig_settings = {}
+        
+        # Per-extruder state tracking to allow multi-tool coexistence.
+        # Maps extruder_name -> filament_pos
+        self._extruder_pos_map = {}
 
         self.printer.register_event_handler('klippy:connect', self._handle_connect)
 
@@ -168,9 +172,16 @@ class MmuToolchangerBridge:
         new_stepper = printer_extruder.extruder_stepper
 
         # --- 2. Update MMU extruder name and stepper references ---
+        # Before switching, save the filament position for the outgoing extruder.
+        if mmu.extruder_name:
+            self._extruder_pos_map[mmu.extruder_name] = mmu.filament_pos
+
         mmu.extruder_name = extruder_name
         mmu.mmu_toolhead.mmu_extruder_stepper = new_stepper
         mmu.mmu_extruder_stepper = new_stepper
+
+        # Restore the filament position for the incoming extruder (default to UNLOADED)
+        mmu.filament_pos = self._extruder_pos_map.get(extruder_name, mmu.FILAMENT_POS_UNLOADED)
 
         is_t0 = (extruder_name == self.t0_extruder)
         suffix = self._get_suffix(extruder_name)
