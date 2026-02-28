@@ -230,11 +230,15 @@ class MmuToolchangerBridge:
 
         self.gcode.register_command(
             'SET_MMU_EXTRUDER', self.cmd_SET_MMU_EXTRUDER,
-            desc="Dynamically switch Happy Hare's active extruder and sensors"
+            help="Dynamically switch Happy Hare's active extruder and sensors"
         )
         self.gcode.register_command(
             'DUMP_MMU_BRIDGE', self.cmd_DUMP_MMU_BRIDGE,
-            desc="Diagnostic command to dump bridge state"
+            help="Diagnostic command to dump bridge state"
+        )
+        self.gcode.register_command(
+            'SCAN_MMU_PINS', self.cmd_SCAN_MMU_PINS,
+            help="Scan all MMB physical STP pins"
         )
 
     # -------------------------------------------------------------------------
@@ -602,9 +606,6 @@ class MmuToolchangerBridge:
                 actual_name = getattr(s, 'name', 'unknown')
                 logging.info("MMU Toolchanger Bridge: Sensor status '%s' -> %s (%s)" % (hh_name, actual_name, state))
 
-        # Register scan command
-        self.gcode.register_command("SCAN_MMU_PINS", self.cmd_SCAN_MMU_PINS,
-                                     help="Scan all MMB physical STP pins")
 
     # -------------------------------------------------------------------------
 
