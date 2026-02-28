@@ -122,7 +122,14 @@ class MmuToolchangerBridge:
                     except Exception as e:
                         logging.warning("MMU Toolchanger Bridge: Failed to register %s: %s" % (name, str(e)))
 
-        # 2. Save originals so we can restore them when T1+ is active
+        # 2. Ensure generic HH endstop names exist in gear_rail so they can be swapped.
+        # If the MMU doesn't have an extruder sensor, "extruder" won't be in the list,
+        # which causes MMU_CALIBRATE_BOWDEN to fail. We add a 'mock' if missing.
+        for name in [mmu.SENSOR_GATE, mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_TOOLHEAD]:
+            if name not in mmu.gear_rail.get_extra_endstop_names():
+                mmu.gear_rail.add_extra_endstop("mock", name, register=True)
+
+        # 3. Save originals so we can restore them when T1+ is active
         self._orig_settings = {
             'bowden_homing_max':      mmu.bowden_homing_max,
             'gate_homing_max':        getattr(mmu, 'gate_homing_max', None),
@@ -240,6 +247,7 @@ class MmuToolchangerBridge:
             # Sensor relay swaps in gear_rail.extra_endstops
             pre_gate_name = "%s_pre_gate_0" % p
             extruder_name_es = "%s_extruder_0" % p
+            toolhead_name_es = "%s_toolhead_0" % p
             
             new_endstops = []
             registered_es = mmu.gear_rail.extra_endstops
@@ -249,6 +257,9 @@ class MmuToolchangerBridge:
                     new_endstops.append((found_es, name))
                 elif name == mmu.SENSOR_EXTRUDER_ENTRY:
                     found_es = next((e[0] for e in registered_es if e[1] == extruder_name_es), es)
+                    new_endstops.append((found_es, name))
+                elif name == mmu.SENSOR_TOOLHEAD:
+                    found_es = next((e[0] for e in registered_es if e[1] == toolhead_name_es), es)
                     new_endstops.append((found_es, name))
                 else:
                     new_endstops.append((es, name))
