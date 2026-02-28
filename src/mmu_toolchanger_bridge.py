@@ -244,6 +244,10 @@ class MmuToolchangerBridge:
         logging.info("MMU Toolchanger Bridge: Discovering sensors in Klipper objects: %s" % str(all_objects))
         
         for obj_name in all_objects:
+            if not isinstance(obj_name, str):
+                logging.info("MMU Toolchanger Bridge: Skipping non-string object: %s" % str(obj_name))
+                continue
+                
             # Match 'filament_switch_sensor mmu_...' or just 'mmu_...'
             match = re.match(r'^(filament_switch_sensor|mmu_sensor)?\s*(%s_.*)$' % p, obj_name)
             if match:
