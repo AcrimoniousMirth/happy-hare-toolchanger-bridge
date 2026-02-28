@@ -437,11 +437,7 @@ class MmuToolchangerBridge:
         for es, name in mmu.gear_rail.extra_endstops:
             mcu_name = es.get_mcu().get_name() if hasattr(es, 'get_mcu') else es.__class__.__name__
             pin = getattr(es, '_pin', 'unknown')
-            # Check triggered state if possible
-            trig = "unknown"
-            if hasattr(es, 'query_endstop'):
-                trig = "TRIGGERED" if es.query_endstop(self.reactor.monotonic()) else "OPEN"
-            gcmd.respond_info("  %s -> pin:%s, mcu:%s [%s]" % (name, pin, mcu_name, trig))
+            gcmd.respond_info("  %s -> pin:%s, mcu:%s" % (name, pin, mcu_name))
 
         gcmd.respond_info("All Sensors (Manager Keys):")
         for name in sorted(mmu.sensor_manager.all_sensors.keys()):
