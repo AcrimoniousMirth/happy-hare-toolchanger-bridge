@@ -102,7 +102,7 @@ class BridgeProxySensor:
                 self.sensor_enabled = True
             @property
             def filament_present(self):
-                return self.sensor.get_status().get('filament_detected', False)
+                return self.sensor.get_status(0).get('filament_detected', False)
         self.runout_helper = ProxyHelper(native_sensor)
 
     def get_status(self, eventtime):
@@ -510,8 +510,8 @@ class MmuToolchangerBridge:
             gcmd.respond_info("  %s -> pin:%s, mcu:%s [%s]" % (name, pin, mcu_name, state))
 
         gcmd.respond_info("All Sensors (Manager View):")
-        for name in sorted(sensor_manager.all_sensors.keys()):
-            s = sensor_manager.all_sensors[name]
+        for name in sorted(mmu.sensor_manager.all_sensors.keys()):
+            s = mmu.sensor_manager.all_sensors[name]
             helper = getattr(s, 'runout_helper', None)
             detected = False
             if helper:
