@@ -62,9 +62,14 @@ class MmuToolchangerBridge:
         # ceiling so preload can reach mmu_extruder_0 in a single homing pass.
         self.t0_bowden_max = config.getfloat('t0_bowden_max', 2000., above=0.)
 
+        # T0 Loading specific settings
+        self.t0_slow_zone_mm = config.getfloat('t0_slow_zone_mm', 100., above=0.)
+        self.t0_load_attempts = config.getint('t0_load_attempts', 1, minval=1)
+        self.t0_fast_speed = config.getfloat('t0_fast_speed', 150., above=0.)
+        self.t0_slow_speed = config.getfloat('t0_slow_speed', 40., above=0.)
+
         # Saved HH defaults (captured at klippy:connect)
-        self._orig_bowden_homing_max = None
-        self._orig_gate_homing_max = None
+        self._orig_settings = {}
 
         self.printer.register_event_handler('klippy:connect', self._handle_connect)
 
@@ -82,15 +87,19 @@ class MmuToolchangerBridge:
             return
 
         # Save originals so we can restore them when T1+ is active
-        self._orig_bowden_homing_max = mmu.bowden_homing_max
-        self._orig_gate_homing_max   = getattr(mmu, 'gate_homing_max', None)
+        self._orig_settings = {
+            'bowden_homing_max':      mmu.bowden_homing_max,
+            'gate_homing_max':        getattr(mmu, 'gate_homing_max', None),
+            'gear_from_buffer_speed': getattr(mmu, 'gear_from_buffer_speed', 100.),
+            'gear_homing_speed':      getattr(mmu, 'gear_homing_speed', 20.),
+            'extruder_homing_buffer': getattr(mmu, 'extruder_homing_buffer', 0.),
+            'extruder_homing_endstop': getattr(mmu, 'extruder_homing_endstop', 'mmu_extruder'),
+            'extruder_force_homing':  getattr(mmu, 'extruder_force_homing', False),
+            'gate_load_retries':      getattr(mmu, 'gate_load_retries', 2),
+            'extra_endstops':         list(mmu.gear_rail.extra_endstops) # copy
+        }
 
-        logging.info(
-            "MMU Toolchanger Bridge: defaults captured — "
-            "bowden_homing_max=%.1fmm, gate_homing_max=%s, T0 max=%.1fmm"
-            % (self._orig_bowden_homing_max,
-               str(self._orig_gate_homing_max),
-               self.t0_bowden_max))
+        logging.info("MMU Toolchanger Bridge: HH defaults captured")
 
         # Auto-apply T0 settings if HH already has extruder (T0) as the configured
         # extruder at startup, so that automatic preload triggered by the pre-gate
@@ -133,6 +142,9 @@ class MmuToolchangerBridge:
         mmu.mmu_toolhead.mmu_extruder_stepper = new_stepper
         mmu.mmu_extruder_stepper = new_stepper
 
+        is_t0 = (extruder_name == self.t0_extruder)
+        suffix = self._get_suffix(extruder_name)
+
         # --- 3. Update extruder stepper on homing-related gear rail endstops ---
         if mmu.mmu_machine.homing_extruder:
             new_mcu_stepper = getattr(new_stepper, 'stepper', None)
@@ -163,48 +175,51 @@ class MmuToolchangerBridge:
                             except Exception:
                                 pass
 
-        # --- 4. Set homing distance limits for the active toolhead ---
-        # T0 has a long bowden from the MMU gate to toolhead 0's extruder sensor.
-        # Both bowden_homing_max (used for full load) and gate_homing_max (used for
-        # preload) must be set large enough to cover the entire path in one pass.
-        is_t0 = (extruder_name == self.t0_extruder)
+        # --- 4. Apply T0 specific load/homing settings ---
+        if is_t0:
+            mmu.bowden_homing_max = self.t0_bowden_max
+            if hasattr(mmu, 'gate_homing_max'):
+                mmu.gate_homing_max = self.t0_bowden_max
+            mmu.gear_from_buffer_speed = self.t0_fast_speed
+            mmu.gear_homing_speed = self.t0_slow_speed
+            mmu.extruder_homing_buffer = self.t0_slow_zone_mm
+            mmu.extruder_homing_endstop = mmu.SENSOR_EXTRUDER_ENTRY
+            mmu.extruder_force_homing = True
+            mmu.gate_load_retries = self.t0_load_attempts
 
-        new_bowden_max = self.t0_bowden_max if is_t0 else self._orig_bowden_homing_max
-        new_gate_max   = self.t0_bowden_max if is_t0 else self._orig_gate_homing_max
-
-        if self._orig_bowden_homing_max is not None:
-            mmu.bowden_homing_max = new_bowden_max
-
-        if self._orig_gate_homing_max is not None and hasattr(mmu, 'gate_homing_max'):
-            mmu.gate_homing_max = new_gate_max
-
-        gate = mmu.gate_selected if mmu.gate_selected >= 0 else 0
-        calibrated = (mmu.bowden_lengths[gate]
-                      if hasattr(mmu, 'bowden_lengths') and gate < len(mmu.bowden_lengths)
-                      else -1)
-        if calibrated > 0:
-            mmu.log_info(
-                "MMU: Homing max set to gate=%.1fmm bowden=%.1fmm for '%s' "
-                "(calibrated gate %d length: %.1fmm)"
-                % (new_gate_max, new_bowden_max, extruder_name, gate, calibrated))
+            # Swap Gate sensor to T0 Extruder sensor for homing
+            gate_sensor = self._lookup_sensor("%s_extruder_%s" % (self.sensor_prefix, suffix))
+            if gate_sensor and hasattr(gate_sensor, 'mcu_endstop'):
+                new_endstops = []
+                for es, name in mmu.gear_rail.extra_endstops:
+                    if name == mmu.SENSOR_GATE:
+                        new_endstops.append((gate_sensor.mcu_endstop, name))
+                    else:
+                        new_endstops.append((es, name))
+                mmu.gear_rail.extra_endstops = new_endstops
         else:
-            mmu.log_info(
-                "MMU: Homing max set to gate=%.1fmm bowden=%.1fmm for '%s' "
-                "(gate %d uncalibrated — run MMU_CALIBRATE_BOWDEN after gear calibration)"
-                % (new_gate_max, new_bowden_max, extruder_name, gate))
+            # Restore defaults
+            if self._orig_settings:
+                mmu.bowden_homing_max = self._orig_settings['bowden_homing_max']
+                if hasattr(mmu, 'gate_homing_max'):
+                    mmu.gate_homing_max = self._orig_settings['gate_homing_max']
+                mmu.gear_from_buffer_speed = self._orig_settings['gear_from_buffer_speed']
+                mmu.gear_homing_speed = self._orig_settings['gear_homing_speed']
+                mmu.extruder_homing_buffer = self._orig_settings['extruder_homing_buffer']
+                mmu.extruder_homing_endstop = self._orig_settings['extruder_homing_endstop']
+                mmu.extruder_force_homing = self._orig_settings['extruder_force_homing']
+                mmu.gate_load_retries = self._orig_settings['gate_load_retries']
+                mmu.gear_rail.extra_endstops = list(self._orig_settings['extra_endstops'])
 
         # --- 5. Swap sensors in HH's live all_sensors dict ---
-        suffix = self._get_suffix(extruder_name)
         p = self.sensor_prefix  # e.g. 'mmu'
-
         sensor_map = {
             mmu.SENSOR_EXTRUDER_ENTRY: "%s_extruder_%s" % (p, suffix),
             mmu.SENSOR_TOOLHEAD:       "%s_toolhead_%s" % (p, suffix),
             mmu.SENSOR_TENSION:        "%s_tension_%s"  % (p, suffix),
-            # For T0, mmu_extruder_0 is both the extruder entry and the gate
-            # homing target (no separate mmu_gate sensor in the T0 filament path).
-            mmu.SENSOR_GATE:           "%s_extruder_%s" % (p, suffix),
+            mmu.SENSOR_GATE:           "%s_extruder_%s" % (p, suffix) if is_t0 else None,
         }
+
 
         for hh_key, sensor_name in sensor_map.items():
             sensor_obj = self._lookup_sensor(sensor_name)
