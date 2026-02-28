@@ -346,15 +346,16 @@ class MmuToolchangerBridge:
             mmu.SENSOR_EXTRUDER_ENTRY: "%s_extruder_%s" % (p, suffix),
             mmu.SENSOR_TOOLHEAD:       "%s_toolhead_%s" % (p, suffix),
             mmu.SENSOR_TENSION:        "%s_tension_%s"  % (p, suffix),
-            mmu.SENSOR_GATE:           "%s_gate_0"  % p if is_t0 else None,
+            mmu.SENSOR_GATE:           "%s_pre_gate_0"  % p if is_t0 else None,
         }
 
-        # Sensor Deception for T0 Preload:
-        # Happy Hare checks for gear and gate sensors using prefix + _gate. 
-        # For Gate 0, it looks for 'mmu_gear_0'. We only map gear to pre_gate.
+        # T0 Preload Sensor Logic:
+        # Happy Hare native behavior: user inserts to 'gate', HH preloads by homing to 'gear'.
+        # For T0, user inserts filament at 'mmu_pre_gate_0' (so it acts as HH's 'gate').
+        # Preload should motor the filament until it reaches 'mmu_gate_0' (acts as HH's 'gear').
         if is_t0:
             sensor_map.update({
-                "%s_0" % mmu.SENSOR_GEAR_PREFIX: "%s_pre_gate_0" % p,
+                "%s_0" % mmu.SENSOR_GEAR_PREFIX: "%s_gate_0" % p,
             })
 
         for hh_key, sensor_name in sensor_map.items():
