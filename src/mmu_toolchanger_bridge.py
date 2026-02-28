@@ -214,7 +214,7 @@ class MmuToolchangerBridge:
                 mmu.sensor_manager.all_sensors.pop(hh_key, None)
 
         # Refresh HH's viewable_sensors for the current gate/UI
-        mmu.sensor_manager.reset_active_gate(mmu.gate)
+        mmu.sensor_manager.reset_active_gate(mmu.gate_selected)
 
         mmu.log_info(
             "MMU: Active extruder switched to '%s' (sensor suffix: %s)"
