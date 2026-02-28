@@ -73,7 +73,10 @@ class BridgeProxyEndstop:
 
     def query_endstop(self, print_time):
         # Use our helper's logical state (handles inversion)
-        return 1 if self.proxy_sensor.runout_helper.filament_present else 0
+        try:
+            return 1 if self.proxy_sensor.runout_helper.filament_present else 0
+        except Exception:
+            return 0
 
     def home_start(self, print_time, sample_time, sample_count, rest_time, triggered):
         self.completion = self.reactor.completion()
@@ -83,13 +86,18 @@ class BridgeProxyEndstop:
 
     def _check_sensor(self, triggered):
         # If the sensor matches our target 'triggered' state, complete.
-        if self.proxy_sensor.runout_helper.filament_present == bool(triggered):
-            if not self.completion.completed():
-                self.completion.complete(0)
-            return self.reactor.NEVER
+        try:
+            current_state = bool(self.proxy_sensor.runout_helper.filament_present)
+            if current_state == bool(triggered):
+                if not self.completion.completed():
+                    self.completion.complete(0)
+                return self.reactor.NEVER
+        except Exception:
+            pass
 
         # Check again in 10ms
-        self.reactor.register_timer(lambda et: self._check_sensor(triggered), self.reactor.monotonic() + 0.01)
+        self.reactor.register_timer(self.reactor.monotonic() + 0.01,
+                                    lambda et: self._check_sensor(triggered))
         return self.reactor.NEVER
 
     def home_wait(self, home_end_time):
@@ -553,27 +561,51 @@ class MmuToolchangerBridge:
         
         gcmd.respond_info("Gear Rail Extra Endstops:")
         for es, name in mmu.gear_rail.extra_endstops:
-            mcu_name = es.get_mcu().get_name() if hasattr(es, 'get_mcu') else es.__class__.__name__
-            pin = getattr(es, '_pin', 'unknown')
-            state = "unknown"
-            if hasattr(es, 'query_endstop'):
-                state = "TRIGGERED" if es.query_endstop(0) else "OPEN"
-            gcmd.respond_info("  %s -> pin:%s, mcu:%s [%s]" % (name, pin, mcu_name, state))
+            try:
+                mcu_name = es.get_mcu().get_name() if hasattr(es, 'get_mcu') else es.__class__.__name__
+                pin = getattr(es, '_pin', 'unknown')
+                state = "unknown"
+                if hasattr(es, 'query_endstop'):
+                    state = "TRIGGERED" if es.query_endstop(0) else "OPEN"
+                gcmd.respond_info("  %s -> pin:%s, mcu:%s [%s]" % (name, pin, mcu_name, state))
+            except Exception as e:
+                gcmd.respond_info("  %s -> Error: %s" % (name, str(e)))
 
         gcmd.respond_info("All Sensors (Manager View):")
         for name in sorted(mmu.sensor_manager.all_sensors.keys()):
             s = mmu.sensor_manager.all_sensors[name]
-            helper = getattr(s, 'runout_helper', None)
             logical_state = "unknown"
             raw_state = "unknown"
-            if helper:
-                logical_state = "DETECTED" if helper.filament_present else "EMPTY"
-                # Access the native Klipper status for comparison
-                status = helper.sensor.get_status(0)
-                raw_state = "DETECTED" if status.get('filament_detected') else "EMPTY"
+            pin_info = "proxy"
             
-            pin = getattr(helper, '_pin', 'proxy')
-            gcmd.respond_info("  %s -> Logical:%s, Raw:%s (pin:%s)" % (name, logical_state, raw_state, pin))
+            try:
+                # 1. Get Logical State
+                if hasattr(s, 'filament_present'):
+                    logical_state = "DETECTED" if s.filament_present else "EMPTY"
+                else:
+                    helper = getattr(s, 'runout_helper', None)
+                    if helper and hasattr(helper, 'filament_present'):
+                        logical_state = "DETECTED" if helper.filament_present else "EMPTY"
+                
+                # 2. Get Raw State
+                sensor_obj = getattr(s, 'sensor', None)
+                if sensor_obj is None:
+                    helper = getattr(s, 'runout_helper', None)
+                    sensor_obj = getattr(helper, 'sensor', None)
+                
+                if sensor_obj and hasattr(sensor_obj, 'get_status'):
+                    status = sensor_obj.get_status(0)
+                    raw_state = "DETECTED" if status.get('filament_detected') else "EMPTY"
+                
+                # 3. Get Pin Info from extra endstops
+                for es, es_name in mmu.gear_rail.extra_endstops:
+                    if es_name == name:
+                        pin_info = getattr(es, '_pin', 'unknown')
+                        break
+                
+                gcmd.respond_info("  %s -> Logical:%s, Raw:%s (pin:%s)" % (name, logical_state, raw_state, pin_info))
+            except Exception as e:
+                gcmd.respond_info("  %s -> Error: %s" % (name, str(e)))
 
     # -------------------------------------------------------------------------
 
