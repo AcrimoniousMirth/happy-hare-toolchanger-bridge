@@ -62,11 +62,15 @@ class MmuToolchangerBridge:
         # ceiling so preload can reach mmu_extruder_0 in a single homing pass.
         self.t0_bowden_max = config.getfloat('t0_bowden_max', 2000., above=0.)
 
-        # T0 Loading specific settings
-        self.t0_slow_zone_mm = config.getfloat('t0_slow_zone_mm', 100., above=0.)
+        # T0 Loading specific settings (Default to HH global parameters)
+        mmu_config = config.getsection('mmu')
+        self.t0_slow_zone_mm = config.getfloat('t0_slow_zone_mm', 
+                                              mmu_config.getfloat('extruder_homing_buffer', 30.))
         self.t0_load_attempts = config.getint('t0_load_attempts', 1, minval=1)
-        self.t0_fast_speed = config.getfloat('t0_fast_speed', 150., above=0.)
-        self.t0_slow_speed = config.getfloat('t0_slow_speed', 40., above=0.)
+        self.t0_fast_speed = config.getfloat('t0_fast_speed', 
+                                             mmu_config.getfloat('gear_from_buffer_speed', 150.))
+        self.t0_slow_speed = config.getfloat('t0_slow_speed', 
+                                             mmu_config.getfloat('gear_homing_speed', 20.))
 
         # Saved HH defaults (captured at klippy:connect)
         self._orig_settings = {}
@@ -94,8 +98,10 @@ class MmuToolchangerBridge:
             'gear_homing_speed':      getattr(mmu, 'gear_homing_speed', 20.),
             'extruder_homing_buffer': getattr(mmu, 'extruder_homing_buffer', 0.),
             'extruder_homing_endstop': getattr(mmu, 'extruder_homing_endstop', 'mmu_extruder'),
+            'gate_homing_endstop':    getattr(mmu, 'gate_homing_endstop', 'mmu_gate'),
             'extruder_force_homing':  getattr(mmu, 'extruder_force_homing', False),
             'gate_load_retries':      getattr(mmu, 'gate_load_retries', 2),
+            'preload_attempts':       getattr(mmu, 'preload_attempts', 2),
             'extra_endstops':         list(mmu.gear_rail.extra_endstops) # copy
         }
 
@@ -119,9 +125,8 @@ class MmuToolchangerBridge:
         return extruder_name.replace('extruder', '') or '0'
 
     def _lookup_sensor(self, name):
-        """Look up a filament_switch_sensor by name, returning None if absent."""
-        return self.printer.lookup_object(
-            "filament_switch_sensor %s" % name, None)
+        """Look up a filament_switch_sensor logic object by name."""
+        return self.printer.lookup_object("filament_switch_sensor %s" % name, None)
 
     def _apply_settings(self, mmu, extruder_name):
         """Core logic: update extruder, endstops, homing distances, and sensors."""
@@ -144,6 +149,7 @@ class MmuToolchangerBridge:
 
         is_t0 = (extruder_name == self.t0_extruder)
         suffix = self._get_suffix(extruder_name)
+        p = self.sensor_prefix # e.g. 'mmu'
 
         # --- 3. Update extruder stepper on homing-related gear rail endstops ---
         if mmu.mmu_machine.homing_extruder:
@@ -158,10 +164,9 @@ class MmuToolchangerBridge:
                     mmu.SENSOR_COMPRESSION,
                     mmu.SENSOR_TENSION,
                 }
-                gear_stepper_ids = {
-                    id(s) for s in mmu.gear_rail.steppers
-                    if hasattr(s, 'get_name')
-                }
+                # Ensure we only keep gear steppers + target toolhead's extruder stepper
+                gear_stepper_ids = {id(s) for s in mmu.gear_rail.steppers if hasattr(s, 'get_name')}
+                
                 for (mcu_endstop, name) in mmu.gear_rail.extra_endstops:
                     if name in extruder_endstop_names:
                         if hasattr(mcu_endstop, 'steppers'):
@@ -177,28 +182,50 @@ class MmuToolchangerBridge:
 
         # --- 4. Apply T0 specific load/homing settings ---
         if is_t0:
+            # Relay strategy:
+            # 1. Map Gate sensor to Pre-Gate (instant pick-up detection)
+            # 2. Map Extruder Entry to T0's Toolhead sensor
+            # 3. Use high speed for bowden move
+            # 4. Use slow zone for final homing to toolhead sensor
+            
             mmu.bowden_homing_max = self.t0_bowden_max
             if hasattr(mmu, 'gate_homing_max'):
                 mmu.gate_homing_max = self.t0_bowden_max
+            
             mmu.gear_from_buffer_speed = self.t0_fast_speed
             mmu.gear_homing_speed = self.t0_slow_speed
             mmu.extruder_homing_buffer = self.t0_slow_zone_mm
             mmu.extruder_homing_endstop = mmu.SENSOR_EXTRUDER_ENTRY
+            mmu.gate_homing_endstop = mmu.SENSOR_GATE
             mmu.extruder_force_homing = True
             mmu.gate_load_retries = self.t0_load_attempts
+            mmu.preload_attempts = self.t0_load_attempts
 
-            # Swap Gate sensor to T0 Extruder sensor for homing
-            gate_sensor = self._lookup_sensor("%s_extruder_%s" % (self.sensor_prefix, suffix))
-            if gate_sensor and hasattr(gate_sensor, 'mcu_endstop'):
-                new_endstops = []
-                for es, name in mmu.gear_rail.extra_endstops:
-                    if name == mmu.SENSOR_GATE:
-                        new_endstops.append((gate_sensor.mcu_endstop, name))
-                    else:
-                        new_endstops.append((es, name))
-                mmu.gear_rail.extra_endstops = new_endstops
+            # Sensor relay swaps in gear_rail.extra_endstops
+            # Gate -> Pre-Gate 0 (for instant MMU_PRELOAD/load_gate success)
+            # Extruder Entry -> T0's toolhead sensor (mmu_extruder_0)
+            pre_gate_obj = self._lookup_sensor("%s_pre_gate_0" % p)
+            extruder_obj = self._lookup_sensor("%s_extruder_0" % p)
+            
+            new_endstops = []
+            for es, name in mmu.gear_rail.extra_endstops:
+                if name == mmu.SENSOR_GATE and pre_gate_obj and hasattr(pre_gate_obj, 'runout_helper'):
+                    # We need the mcu_endstop which HH registered earlier.
+                    # HH usually keys them by name in its own list.
+                    # We'll search for the one that matches our target sensor's pin.
+                    target_pin = pre_gate_obj.runout_helper.switch_pin
+                    found_es = next((orig_es for orig_es, orig_name in self._orig_settings['extra_endstops'] 
+                                   if getattr(orig_es, 'name', '') == "%s_pre_gate_0" % p), es)
+                    new_endstops.append((found_es, name))
+                elif name == mmu.SENSOR_EXTRUDER_ENTRY and extruder_obj:
+                    found_es = next((orig_es for orig_es, orig_name in self._orig_settings['extra_endstops'] 
+                                   if orig_name == "%s_extruder_0" % p), es)
+                    new_endstops.append((found_es, name))
+                else:
+                    new_endstops.append((es, name))
+            mmu.gear_rail.extra_endstops = new_endstops
         else:
-            # Restore defaults
+            # Restore defaults for T1-T5
             if self._orig_settings:
                 mmu.bowden_homing_max = self._orig_settings['bowden_homing_max']
                 if hasattr(mmu, 'gate_homing_max'):
@@ -207,26 +234,29 @@ class MmuToolchangerBridge:
                 mmu.gear_homing_speed = self._orig_settings['gear_homing_speed']
                 mmu.extruder_homing_buffer = self._orig_settings['extruder_homing_buffer']
                 mmu.extruder_homing_endstop = self._orig_settings['extruder_homing_endstop']
+                mmu.gate_homing_endstop = self._orig_settings['gate_homing_endstop']
                 mmu.extruder_force_homing = self._orig_settings['extruder_force_homing']
                 mmu.gate_load_retries = self._orig_settings['gate_load_retries']
+                mmu.preload_attempts = self._orig_settings['preload_attempts']
                 mmu.gear_rail.extra_endstops = list(self._orig_settings['extra_endstops'])
 
-        # --- 5. Swap sensors in HH's live all_sensors dict ---
-        p = self.sensor_prefix  # e.g. 'mmu'
+        # --- 5. Swap sensors in HH's live all_sensors dict for UI/Logic ---
         sensor_map = {
             mmu.SENSOR_EXTRUDER_ENTRY: "%s_extruder_%s" % (p, suffix),
             mmu.SENSOR_TOOLHEAD:       "%s_toolhead_%s" % (p, suffix),
             mmu.SENSOR_TENSION:        "%s_tension_%s"  % (p, suffix),
-            mmu.SENSOR_GATE:           "%s_extruder_%s" % (p, suffix) if is_t0 else None,
+            mmu.SENSOR_GATE:           "%s_pre_gate_0"  % p if is_t0 else None,
         }
 
-
         for hh_key, sensor_name in sensor_map.items():
-            sensor_obj = self._lookup_sensor(sensor_name)
-            if sensor_obj is not None:
-                mmu.sensor_manager.all_sensors[hh_key] = sensor_obj
-            else:
-                mmu.sensor_manager.all_sensors.pop(hh_key, None)
+            if sensor_name:
+                sensor_obj = self._lookup_sensor(sensor_name)
+                if sensor_obj is not None:
+                    mmu.sensor_manager.all_sensors[hh_key] = sensor_obj
+                else:
+                    mmu.sensor_manager.all_sensors.pop(hh_key, None)
+            elif not is_t0: # Restore T1+ gate sensor
+                pass # Already handled by reset_active_gate below if we didn't touch it
 
         # Refresh HH's viewable_sensors for the current gate/UI
         mmu.sensor_manager.reset_active_gate(mmu.gate_selected)
