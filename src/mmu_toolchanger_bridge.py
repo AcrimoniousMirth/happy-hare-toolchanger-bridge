@@ -78,8 +78,9 @@ class BridgeProxyEndstop:
 
     def _check_sensor(self, triggered):
         # If the sensor matches our target 'triggered' state, complete.
-        current_state = self.query_endstop(0)
-        logging.info("MMU Bridge Proxy [%s]: State=%d, Target=%d" % (self.name, current_state, triggered))
+        status = self.sensor.get_status(0)
+        current_state = 1 if status.get('filament_detected') else 0
+        logging.info("MMU Bridge Proxy [%s]: State=%d, Target=%d, Raw=%s" % (self.name, current_state, triggered, str(status)))
         if bool(current_state) == bool(triggered):
             self.completion.complete(True)
         else:
@@ -455,10 +456,13 @@ class MmuToolchangerBridge:
         # Happy Hare native behavior: user inserts to 'gate', HH preloads by homing to 'gear'.
         # For T0, user inserts filament at 'mmu_pre_gate_0' (so it acts as HH's 'gate').
         # Preload moves the filament until it reaches 'mmu_gate_0'.
-        # We map 'mmu_gear_0' to 'mmu_gate_0' so HH's preload homing hits the right sensor.
+        # We map HH's 'mmu_gate' and 'mmu_gear_0' names to 'mmu_gate_0' so it stops.
         if is_t0:
+            gear_key = "%s_0" % mmu.SENSOR_GEAR_PREFIX
+            gate_key = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_GATE, 0)
             sensor_map.update({
-                "%s_0" % mmu.SENSOR_GEAR_PREFIX: "%s_gate_0" % p,
+                gear_key: "%s_gate_0" % p,
+                gate_key: "%s_gate_0" % p,
             })
 
         for hh_key, sensor_name in sensor_map.items():
