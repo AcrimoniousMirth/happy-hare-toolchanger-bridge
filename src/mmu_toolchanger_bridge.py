@@ -132,13 +132,21 @@ class BridgeProxySensor:
                 return self.sensor.get_status(0).get('filament_detected', False)
 
             def enable_button_feedback(self, enable):
-                if self.native_helper and hasattr(self.native_helper, 'enable_button_feedback'):
-                    self.native_helper.enable_button_feedback(enable)
+                if self.native_helper:
+                    if hasattr(self.native_helper, 'enable_button_feedback'):
+                        self.native_helper.enable_button_feedback(enable)
+                    elif hasattr(self.native_helper, 'button_handler_suspended'):
+                        self.native_helper.button_handler_suspended = not enable
             
             def enable_runout(self, enable):
                 self.sensor_enabled = enable
-                if self.native_helper and hasattr(self.native_helper, 'set_enabled'):
-                    self.native_helper.set_enabled(enable)
+                if self.native_helper:
+                    if hasattr(self.native_helper, 'set_enabled'):
+                        self.native_helper.set_enabled(enable)
+                    if hasattr(self.native_helper, 'enable_runout'):
+                        self.native_helper.enable_runout(enable)
+                    if hasattr(self.native_helper, 'runout_suspended'):
+                        self.native_helper.runout_suspended = not enable
         self.runout_helper = ProxyHelper(native_sensor)
 
     def get_status(self, eventtime):
@@ -230,16 +238,14 @@ class MmuToolchangerBridge:
         p = self.sensor_prefix
 
         # 1. Proactively discover all native Klipper sensors that should be bridged.
-        # We look for [filament_switch_sensor mmu_X] and [mmu_sensor mmu_X].
-        configfile = self.printer.lookup_object('configfile')
-        config = configfile.get_status(None).get('config', configfile.get_status(None).get('settings', {}))
-        
+        # We look for any Klipper object that looks like an MMU sensor.
+        # This includes dynamically created ones by Happy Hare.
         found_sensors = []
-        for section in config.keys():
-            match = re.match(r'^(filament_switch_sensor|mmu_sensor) (%s_.*)$' % p, section)
-            if match:
-                name = match.group(2)
-                found_sensors.append((section, name))
+        for obj_name in self.printer.lookup_objects():
+            if obj_name.startswith('filament_switch_sensor %s_' % p) or \
+               obj_name.startswith('mmu_sensor %s_' % p):
+                name = obj_name.split(' ', 1)[1]
+                found_sensors.append((obj_name, name))
 
         # Store BridgeProxySensor instances for later use
         proxy_sensors = {}
@@ -267,7 +273,7 @@ class MmuToolchangerBridge:
                 logging.info("MMU Toolchanger Bridge: Registered %s as gear rail ProxyEndstop" % name)
 
             # 2. Register as a Proxy Sensor in HH's Sensor Manager for UI/Logic.
-            if name not in sensor_manager.all_sensors:
+            if name not in sensor_manager.all_sensors or not isinstance(sensor_manager.all_sensors[name], BridgeProxySensor):
                 sensor_manager.all_sensors[name] = proxy_s
                 logging.info("MMU Toolchanger Bridge: Registered %s as proxy Sensor object" % name)
 
@@ -590,8 +596,12 @@ class MmuToolchangerBridge:
                 # 2. Get Raw State
                 sensor_obj = getattr(s, 'sensor', None)
                 if sensor_obj is None:
+                    # Try to find the Klipper object directly if it's a native HH sensor
                     helper = getattr(s, 'runout_helper', None)
-                    sensor_obj = getattr(helper, 'sensor', None)
+                    klipper_name = getattr(s, 'name', name)
+                    if not klipper_name.startswith('filament_switch_sensor'):
+                        klipper_name = 'filament_switch_sensor ' + klipper_name
+                    sensor_obj = self.printer.lookup_object(klipper_name, None)
                 
                 if sensor_obj and hasattr(sensor_obj, 'get_status'):
                     status = sensor_obj.get_status(0)
