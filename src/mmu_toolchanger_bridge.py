@@ -45,9 +45,15 @@ class MmuToolchangerBridge:
             mmu.mmu_extruder_stepper = new_stepper
             
             # 3. Synchronize gear rail endstops if necessary
-            # The sensor manager holds references to steppers for endstop stopping
-            for endstop in mmu.gear_rail.get_endstops():
-                name = endstop.get_name()
+            # The sensor manager holds references to steppers for endstop stopping.
+            # get_endstops() might return objects with get_name() or (mcu_endstop, name) tuples
+            for endstop_item in mmu.gear_rail.get_endstops():
+                if isinstance(endstop_item, tuple) and len(endstop_item) == 2:
+                    endstop, name = endstop_item
+                else:
+                    endstop = endstop_item
+                    name = endstop.get_name() if hasattr(endstop, 'get_name') else None
+                
                 if name in [mmu.SENSOR_TOOLHEAD, mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_COMPRESSION, mmu.SENSOR_TENSION]:
                     # Update the MCU stepper associated with this endstop
                     # This ensures rapid stopping on synced homing for the new extruder
