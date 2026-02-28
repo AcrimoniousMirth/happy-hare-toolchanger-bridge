@@ -42,6 +42,14 @@
 
 import logging
 
+class BridgeMockEndstop:
+    def __init__(self):
+        self._pin = "mock"
+    def add_stepper(self, stepper):
+        pass
+    def get_steppers(self):
+        return []
+
 class MmuToolchangerBridge:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -127,9 +135,9 @@ class MmuToolchangerBridge:
         # which causes MMU_CALIBRATE_BOWDEN to fail. We add a 'mock' if missing.
         # We also need to add unit-prefixed versions (e.g. unit_1_extruder) because
         # HH looks those up in multi-unit configurations (T1-T5).
-        # We pass self.mmu.gear_rail.MockEndstop() to avoid the "pin mock used
-        # multiple times" error in Klipper's pin manager.
-        mock_es = mmu.gear_rail.MockEndstop()
+        # We use our BridgeMockEndstop to satisfy HH's logging/debug logic in
+        # mmu_machine.py which expects .get_steppers() and ._pin.
+        mock_es = BridgeMockEndstop()
         generic_names = [mmu.SENSOR_GATE, mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_TOOLHEAD]
         for name in generic_names:
             names_to_check = [name]
