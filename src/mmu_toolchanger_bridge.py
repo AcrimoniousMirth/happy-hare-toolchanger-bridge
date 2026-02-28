@@ -634,8 +634,13 @@ class MmuToolchangerBridge:
             
             try:
                 # 1. Get Logical State
+                target_info = ""
                 if hasattr(s, 'filament_present'):
                     logical_state = "DETECTED" if s.filament_present else "EMPTY"
+                    # If it's a proxy, show the target
+                    inner = getattr(s, 'sensor', None)
+                    if inner:
+                         target_info = " [proxies: %s]" % getattr(inner, 'name', 'unknown')
                 else:
                     helper = getattr(s, 'runout_helper', None)
                     if helper and hasattr(helper, 'filament_present'):
@@ -678,7 +683,7 @@ class MmuToolchangerBridge:
                         pin_info = getattr(es, '_pin', 'unknown')
                         break
                 
-                gcmd.respond_info("  %s -> Log:%s, Raw:%s (pin:%s)" % (name, logical_state, raw_info, pin_info))
+                gcmd.respond_info("  %s%s -> Log:%s, Raw:%s (pin:%s)" % (name, target_info, logical_state, raw_info, pin_info))
             except Exception as e:
                 gcmd.respond_info("  %s -> Error: %s" % (name, str(e)))
 
