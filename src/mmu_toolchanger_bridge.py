@@ -660,12 +660,17 @@ class MmuToolchangerBridge:
                             break
                 
                 if sensor_obj and hasattr(sensor_obj, 'get_status'):
-                    status = sensor_obj.get_status(0)
-                    raw_state = "DETECTED" if status.get('filament_detected') else "EMPTY"
+                    try:
+                        status = sensor_obj.get_status(0)
+                        raw_state = "DETECTED" if status.get('filament_detected') else "EMPTY"
+                        raw_class = sensor_obj.__class__.__name__
+                        raw_info = "%s [%s]" % (raw_state, raw_class)
+                    except:
+                        raw_info = "Error getting status"
                 elif sensor_obj:
-                    raw_state = "No get_status"
+                    raw_info = "No get_status [%s]" % sensor_obj.__class__.__name__
                 else:
-                    raw_state = "Not found in Klipper"
+                    raw_info = "Object Not Found"
                 
                 # 3. Get Pin Info from extra endstops
                 for es, es_name in mmu.gear_rail.extra_endstops:
@@ -673,7 +678,7 @@ class MmuToolchangerBridge:
                         pin_info = getattr(es, '_pin', 'unknown')
                         break
                 
-                gcmd.respond_info("  %s -> Logical:%s, Raw:%s (pin:%s)" % (name, logical_state, raw_state, pin_info))
+                gcmd.respond_info("  %s -> Log:%s, Raw:%s (pin:%s)" % (name, logical_state, raw_info, pin_info))
             except Exception as e:
                 gcmd.respond_info("  %s -> Error: %s" % (name, str(e)))
 
