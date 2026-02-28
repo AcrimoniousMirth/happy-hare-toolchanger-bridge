@@ -20,7 +20,13 @@
 #
 # Config:
 #   [mmu_toolchanger_bridge]
-#   sensor_prefix: mmu   # prefix for sensor names (default: mmu)
+#   sensor_prefix: mmu        # prefix for sensor names (default: mmu)
+#   t0_bowden_max: 2000       # bowden homing search ceiling for T0 path (default: 2000mm)
+#
+# Bowden length for T0:
+#   Uncalibrated: bowden_homing_max is set to t0_bowden_max so HH searches far enough.
+#   Calibrated:   HH reads mmu.bowden_lengths[gate] from mmu_vars.cfg automatically;
+#                 the key is 'mmu_calibration_bowden_lengths' in mmu_vars.cfg.
 #
 # Copyright (C) 2024  Antigravity / Google Deepmind
 # This file may be distributed under the terms of the GNU GPLv3 license.
@@ -36,10 +42,35 @@ class MmuToolchangerBridge:
         # With default 'mmu', looks for: mmu_toolhead_N, mmu_extruder_N, mmu_tension_N
         self.sensor_prefix = config.get('sensor_prefix', 'mmu')
 
+        # Maximum bowden homing search distance for the T0 (extruder) path.
+        # Used when T0's bowden is uncalibrated. Once calibrated via
+        # MMU_CALIBRATE_BOWDEN, mmu_vars.cfg stores the real length and HH
+        # uses that directly — this value only applies as the search ceiling.
+        self.t0_bowden_max = config.getfloat('t0_bowden_max', 2000., above=0.)
+
+        # Per-suffix bowden_homing_max overrides: populated on klippy:connect.
+        # Suffix '0' (T0) -> t0_bowden_max; all others -> HH's configured default.
+        self._bowden_homing_max_by_suffix = {}
+
+        self.printer.register_event_handler('klippy:connect', self._handle_connect)
+
         self.gcode.register_command(
             'SET_MMU_EXTRUDER', self.cmd_SET_MMU_EXTRUDER,
             desc="Dynamically switch Happy Hare's active extruder and sensors"
         )
+
+    def _handle_connect(self):
+        """Capture HH's configured bowden_homing_max so we can restore it per extruder."""
+        mmu = self.printer.lookup_object('mmu', None)
+        if mmu is None:
+            return
+        original = mmu.bowden_homing_max
+        # T0 (suffix '0') uses t0_bowden_max; all other suffixes use HH's original value.
+        self._bowden_homing_max_by_suffix = {'0': self.t0_bowden_max}
+        self._original_bowden_homing_max = original
+        logging.info(
+            "MMU Toolchanger Bridge: T0 bowden max=%.1fmm, default bowden max=%.1fmm"
+            % (self.t0_bowden_max, original))
 
     def _get_suffix(self, extruder_name):
         """Derive numeric suffix from extruder name.
@@ -110,10 +141,34 @@ class MmuToolchangerBridge:
                                 except Exception:
                                     pass
 
-            # --- 4. Swap sensors in HH's live all_sensors dict ---
+            # --- 4. Set bowden_homing_max for the active toolhead ---
             # Derive suffix: 'extruder' -> '0', 'extruder1' -> '1', etc.
             suffix = self._get_suffix(extruder_name)
             p = self.sensor_prefix  # e.g. 'mmu'
+
+            if self._bowden_homing_max_by_suffix:
+                new_homing_max = self._bowden_homing_max_by_suffix.get(
+                    suffix, self._original_bowden_homing_max)
+                if mmu.bowden_homing_max != new_homing_max:
+                    mmu.bowden_homing_max = new_homing_max
+                    # Log calibrated length if available, so the operator knows
+                    # whether the 2000mm fallback or the calibrated value will be used.
+                    gate = mmu.gate_selected if mmu.gate_selected >= 0 else 0
+                    calibrated = (mmu.bowden_lengths[gate]
+                                  if hasattr(mmu, 'bowden_lengths') and gate < len(mmu.bowden_lengths)
+                                  else -1)
+                    if calibrated > 0:
+                        mmu.log_info(
+                            "MMU: Bowden homing max set to %.1fmm for '%s' "
+                            "(calibrated gate %d length: %.1fmm)"
+                            % (new_homing_max, extruder_name, gate, calibrated))
+                    else:
+                        mmu.log_info(
+                            "MMU: Bowden homing max set to %.1fmm for '%s' "
+                            "(gate %d not yet calibrated — run MMU_CALIBRATE_BOWDEN)"
+                            % (new_homing_max, extruder_name, gate))
+
+            # --- 5. Swap sensors in HH's live all_sensors dict ---
 
             # Map of HH sensor key -> filament_switch_sensor name to look up
             sensor_map = {
