@@ -136,12 +136,26 @@ class MmuToolchangerBridge:
                 # Ensure it's in gear_rail extra_endstops so we can relay to it
                 if name not in mmu.gear_rail.get_extra_endstop_names():
                     sensor_pin = None
-                    if hasattr(sensor, 'runout_helper') and sensor.runout_helper.switch_pin:
+                    if hasattr(sensor, 'runout_helper') and hasattr(sensor.runout_helper, 'switch_pin'):
                         sensor_pin = sensor.runout_helper.switch_pin
                     elif hasattr(sensor, '_pin'):
                         sensor_pin = sensor._pin
+                    else:
+                        # Native Klipper filament_switch_sensor doesn't store its pin.
+                        # We must look it up from the parsed configuration.
+                        configfile = self.printer.lookup_object('configfile', None)
+                        if configfile:
+                            settings = configfile.get_status(self.reactor.monotonic())['settings']
+                            sensor_block = "filament_switch_sensor %s" % name
+                            if sensor_block in settings and 'switch_pin' in settings[sensor_block]:
+                                sensor_pin = settings[sensor_block]['switch_pin']
                     if sensor_pin:
                         try:
+                            ppins = self.printer.lookup_object('pins')
+                            pin_params = ppins.parse_pin(sensor_pin, True, True)
+                            share_name = "%s:%s" % (pin_params['chip_name'], pin_params['pin'])
+                            ppins.allow_multi_use_pin(share_name)
+
                             mmu.gear_rail.add_extra_endstop(sensor_pin, name)
                             logging.info("MMU Toolchanger Bridge: Registered %s as gear rail endstop" % name)
                         except Exception as e:
