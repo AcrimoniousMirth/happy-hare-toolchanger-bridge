@@ -102,9 +102,22 @@ class BridgeProxySensor:
             def __init__(self, sensor):
                 self.sensor = sensor
                 self.sensor_enabled = True
+                self.runout_suspended = False
+                self._pin = getattr(sensor, '_pin', 'proxy')
+            
+            @property
+            def switch_pin(self):
+                return self._pin
+
             @property
             def filament_present(self):
                 return self.sensor.get_status(0).get('filament_detected', False)
+
+            def enable_button_feedback(self, enable):
+                pass
+            
+            def enable_runout(self, enable):
+                self.sensor_enabled = enable
         self.runout_helper = ProxyHelper(native_sensor)
 
     def get_status(self, eventtime):
