@@ -43,16 +43,25 @@
 import logging
 
 class BridgeMockEndstop:
-    def __init__(self):
+    def __init__(self, reactor):
+        self.reactor = reactor
         self._pin = "mock"
     def add_stepper(self, stepper):
         pass
     def get_steppers(self):
         return []
+    def query_endstop(self, print_time):
+        return 0 # Not triggered
+    def home_start(self, print_time, sample_time, sample_count, rest_time, triggered):
+        # We return an uncompleted completion object so it doesn't trigger immediately
+        return self.reactor.completion()
+    def home_wait(self, home_end_time):
+        return home_end_time
 
 class MmuToolchangerBridge:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
 
         # Prefix used when looking up per-toolhead sensors.
@@ -93,6 +102,10 @@ class MmuToolchangerBridge:
             'SET_MMU_EXTRUDER', self.cmd_SET_MMU_EXTRUDER,
             desc="Dynamically switch Happy Hare's active extruder and sensors"
         )
+        self.gcode.register_command(
+            'DUMP_MMU_BRIDGE', self.cmd_DUMP_MMU_BRIDGE,
+            desc="Diagnostic command to dump bridge state"
+        )
 
     # -------------------------------------------------------------------------
 
@@ -108,36 +121,33 @@ class MmuToolchangerBridge:
         # the gear motor can stop on them during homing/calibration.
         p = self.sensor_prefix
         sensor_manager = mmu.sensor_manager
-        ppins = self.printer.lookup_object('pins')
         
         # We'll look for sensors matching our toolhead pattern
         # (e.g. mmu_extruder_0, mmu_toolhead_0, mmu_extruder_1, etc.)
-        all_sensor_names = list(sensor_manager.all_sensors.keys())
-        for name in all_sensor_names:
+        for name, sensor in sensor_manager.all_sensors.items():
             if name.startswith("%s_" % p) and any(x in name for x in ["extruder_", "toolhead_", "pre_gate_", "gear_", "gate_"]):
-                if name not in sensor_manager.endstop_names:
-                    sensor = sensor_manager.all_sensors[name]
-                    sensor_pin = sensor.runout_helper.switch_pin
-                    # Register as extra endstop for gear rail
-                    # Use HH's internal registration to ensure consistency
-                    try:
-                        pin_params = ppins.parse_pin(sensor_pin, True, True)
-                        share_name = "%s:%s" % (pin_params['chip_name'], pin_params['pin'])
-                        ppins.allow_multi_use_pin(share_name)
-                        sensor_manager.endstop_names.append(name)
-                        mmu.gear_rail.add_extra_endstop(sensor_pin, name)
-                        logging.info("MMU Toolchanger Bridge: Registered %s as gear rail endstop" % name)
-                    except Exception as e:
-                        logging.warning("MMU Toolchanger Bridge: Failed to register %s: %s" % (name, str(e)))
+                # Ensure it's in gear_rail extra_endstops so we can relay to it
+                if name not in mmu.gear_rail.get_extra_endstop_names():
+                    sensor_pin = None
+                    if hasattr(sensor, 'runout_helper') and sensor.runout_helper.switch_pin:
+                        sensor_pin = sensor.runout_helper.switch_pin
+                    elif hasattr(sensor, '_pin'):
+                        sensor_pin = sensor._pin
+                    
+                    if sensor_pin:
+                        try:
+                            mmu.gear_rail.add_extra_endstop(sensor_pin, name)
+                            logging.info("MMU Toolchanger Bridge: Registered %s as gear rail endstop" % name)
+                        except Exception as e:
+                            logging.warning("MMU Toolchanger Bridge: Failed to register %s: %s" % (name, str(e)))
 
         # 2. Ensure generic HH endstop names exist in gear_rail so they can be swapped.
         # If the MMU doesn't have an extruder sensor, "extruder" won't be in the list,
         # which causes MMU_CALIBRATE_BOWDEN to fail. We add a 'mock' if missing.
         # We also need to add unit-prefixed versions (e.g. unit_1_extruder) because
         # HH looks those up in multi-unit configurations (T1-T5).
-        # We use our BridgeMockEndstop to satisfy HH's logging/debug logic in
-        # mmu_machine.py which expects .get_steppers() and ._pin.
-        mock_es = BridgeMockEndstop()
+        # We use our MockEndstop to satisfy HH's logging/debug logic.
+        mock_es = BridgeMockEndstop(self.reactor)
         generic_names = [mmu.SENSOR_GATE, mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_TOOLHEAD]
         for name in generic_names:
             names_to_check = [name]
@@ -181,8 +191,10 @@ class MmuToolchangerBridge:
         """
         return extruder_name.replace('extruder', '') or '0'
 
-    def _lookup_sensor(self, name):
-        """Look up a filament_switch_sensor logic object by name."""
+    def _lookup_sensor_wrapper(self, mmu, name):
+        """Look up a sensor object in HH manager, else look up in Klipper."""
+        if name in mmu.sensor_manager.all_sensors:
+            return mmu.sensor_manager.all_sensors[name]
         return self.printer.lookup_object("filament_switch_sensor %s" % name, None)
 
     def _apply_settings(self, mmu, extruder_name):
@@ -281,7 +293,7 @@ class MmuToolchangerBridge:
             ext_es = next((e[0] for e in registered_es if e[1] == p_ext), None)
             th_es  = next((e[0] for e in registered_es if e[1] == p_th), None)
             gt_es  = next((e[0] for e in registered_es if e[1] == p_gt), None) if p_gt else None
-
+            
             for es, name in registered_es:
                 # Expected HH lookup names for this unit
                 hh_ext = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_EXTRUDER_ENTRY, unit_val)
@@ -337,7 +349,7 @@ class MmuToolchangerBridge:
 
         for hh_key, sensor_name in sensor_map.items():
             if sensor_name:
-                sensor_obj = self._lookup_sensor(sensor_name)
+                sensor_obj = self._lookup_sensor_wrapper(mmu, sensor_name)
                 if sensor_obj is not None:
                     mmu.sensor_manager.all_sensors[hh_key] = sensor_obj
                 else:
@@ -355,11 +367,44 @@ class MmuToolchangerBridge:
         
         # Diagnostic: Log sensor states
         for hh_name in [mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_GATE, mmu.SENSOR_TOOLHEAD]:
-            s = mmu.sensor_manager.all_sensors.get(hh_name)
+            s = self._lookup_sensor_wrapper(mmu, hh_name)
             if s:
-                state = "DETECTED" if s.runout_helper.filament_present else "EMPTY"
+                helper = getattr(s, 'runout_helper', None)
+                state = "unknown"
+                if helper:
+                    state = "DETECTED" if helper.filament_present else "EMPTY"
                 actual_name = getattr(s, 'name', 'unknown')
-                logging.info("MMU Toolchanger Bridge: Sensor '%s' -> %s (%s)" % (hh_name, actual_name, state))
+                logging.info("MMU Toolchanger Bridge: Sensor status '%s' -> %s (%s)" % (hh_name, actual_name, state))
+
+    # -------------------------------------------------------------------------
+
+    def cmd_DUMP_MMU_BRIDGE(self, gcmd):
+        mmu = self.printer.lookup_object('mmu', None)
+        if mmu is None:
+            gcmd.respond_info("MMU object not found")
+            return
+
+        gcmd.respond_info("--- MMU Bridge State ---")
+        gcmd.respond_info("Extruder: %s, Pos: %s" % (mmu.extruder_name, mmu.filament_pos))
+        
+        gcmd.respond_info("Gear Rail Extra Endstops:")
+        for es, name in mmu.gear_rail.extra_endstops:
+            mcu_name = es.get_mcu().get_name() if hasattr(es, 'get_mcu') else es.__class__.__name__
+            pin = getattr(es, '_pin', 'unknown')
+            # Check triggered state if possible
+            trig = "unknown"
+            if hasattr(es, 'query_endstop'):
+                trig = "TRIGGERED" if es.query_endstop(self.reactor.monotonic()) else "OPEN"
+            gcmd.respond_info("  %s -> pin:%s, mcu:%s [%s]" % (name, pin, mcu_name, trig))
+
+        gcmd.respond_info("All Sensors (Manager Keys):")
+        for name in sorted(mmu.sensor_manager.all_sensors.keys()):
+            s = mmu.sensor_manager.all_sensors[name]
+            helper = getattr(s, 'runout_helper', None)
+            state = "unknown"
+            if helper:
+                state = "DETECTED" if helper.filament_present else "EMPTY"
+            gcmd.respond_info("  %s -> %s" % (name, state))
 
     # -------------------------------------------------------------------------
 
