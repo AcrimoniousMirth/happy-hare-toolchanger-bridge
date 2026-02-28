@@ -125,9 +125,11 @@ class ProxyHelper:
             return self.native_helper.filament_present
         # Fallback to the raw status if no helper
         try:
-            return self.sensor.get_status(0).get('filament_detected', False)
+            if hasattr(self.sensor, 'get_status'):
+                return self.sensor.get_status(0).get('filament_detected', False)
         except Exception:
-            return False
+            pass
+        return False
 
     def enable_button_feedback(self, enable):
         if self.native_helper:
@@ -239,38 +241,54 @@ class MmuToolchangerBridge:
             return self.reactor.NEVER
 
         sensor_manager = mmu.sensor_manager
-        p = self.sensor_prefix
-
-        # 1. Proactively discover all native Klipper sensors that should be bridged.
-        # We look for any Klipper object that looks like an MMU sensor.
-        found_sensors = []
-        all_objects = self.printer.lookup_objects()
-        logging.info("MMU Toolchanger Bridge: Discovering sensors in Klipper objects: %s" % str(all_objects))
         
+        # 1. Discover sensors already known to Happy Hare.
+        # This is the most stable way to find native pre-gate and gate sensors.
+        for name in list(sensor_manager.all_sensors.keys()):
+            sensor_obj = sensor_manager.all_sensors[name]
+            if isinstance(sensor_obj, BridgeProxySensor):
+                continue
+
+            # Wrap it
+            proxy_s = BridgeProxySensor(name, sensor_obj)
+            sensor_manager.all_sensors[name] = proxy_s
+            logging.info("MMU Toolchanger Bridge: Wrapped existing sensor '%s' in proxy" % name)
+
+        # 2. Proactively discover any toolhead/extruder sensors that might be missing
+        # but are defined in the Klipper configuration.
+        p = self.sensor_prefix
+        search_names = [
+            'toolhead', 'extruder', 'filament_tension', 'mmu_gate', 'mmu_extruder_entry'
+        ]
+        # Extend with unit-specific ones and prefixed ones
+        candidate_bases = []
+        for sn in search_names:
+            candidate_bases.append(sn)
+            candidate_bases.append("%s_%s" % (p, sn))
+        
+        found_sections = []
+        all_objects = self.printer.lookup_objects()
         for obj_name in all_objects:
             if not isinstance(obj_name, str):
-                logging.info("MMU Toolchanger Bridge: Skipping non-string object: %s" % str(obj_name))
                 continue
-                
-            # Match 'filament_switch_sensor mmu_...' or just 'mmu_...'
-            match = re.match(r'^(filament_switch_sensor|mmu_sensor)?\s*(%s_.*)$' % p, obj_name)
-            if match:
-                klipper_section = obj_name
-                hh_name = match.group(2)
-                found_sensors.append((klipper_section, hh_name))
-                logging.info("MMU Toolchanger Bridge: Found candidate sensor '%s' (HH name: '%s')" % (klipper_section, hh_name))
+            if obj_name.startswith('filament_switch_sensor ') or obj_name.startswith('mmu_sensor '):
+                section, name = obj_name.split(' ', 1)
+                # Check if it matches one of our expected sensor names
+                # e.g. mmu_toolhead_0, mmu_extruder_1, etc.
+                if any(name.startswith(base) for base in candidate_bases):
+                    found_sections.append((obj_name, name))
 
-        # Store BridgeProxySensor instances for later use
-        proxy_sensors = {}
-
-        for section, name in found_sensors:
+        for section, name in found_sections:
+            if name in sensor_manager.all_sensors and isinstance(sensor_manager.all_sensors[name], BridgeProxySensor):
+                continue
+            
             sensor_obj = self.printer.lookup_object(section, None)
             if not sensor_obj:
                 continue
 
-            # Create BridgeProxySensor instance
             proxy_s = BridgeProxySensor(name, sensor_obj)
-            proxy_sensors[name] = proxy_s
+            sensor_manager.all_sensors[name] = proxy_s
+            logging.info("MMU Toolchanger Bridge: Found and wrapped external sensor '%s'" % name)
 
             # Determine sensor type and unit index if applicable
             # Patterns: mmu_gate_0, mmu_pre_gate_0, mmu_extruder_0, mmu_toolhead_0, etc.
@@ -284,11 +302,6 @@ class MmuToolchangerBridge:
                 proxy_es = BridgeProxyEndstop(mmu, proxy_s, name) # Pass the BridgeProxySensor instance
                 mmu.gear_rail.add_extra_endstop("mock", name, register=True, mcu_endstop=proxy_es)
                 logging.info("MMU Toolchanger Bridge: Registered %s as gear rail ProxyEndstop" % name)
-
-            # 2. Register as a Proxy Sensor in HH's Sensor Manager for UI/Logic.
-            if name not in sensor_manager.all_sensors or not isinstance(sensor_manager.all_sensors[name], BridgeProxySensor):
-                sensor_manager.all_sensors[name] = proxy_s
-                logging.info("MMU Toolchanger Bridge: Registered %s as proxy Sensor object" % name)
 
             # 3. Special Case: Map unit-specific gate sensor to HH's 'gear' endstop name.
             # HH preloads by homing to 'mmu_gear_N'. In T0 mode, we want this to be the gate sensor.
