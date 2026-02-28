@@ -108,6 +108,8 @@ class BridgeProxySensor:
                 self.sensor_enabled = True
                 self.runout_suspended = False
                 self._pin = getattr(sensor, '_pin', 'proxy')
+                # Try to find the real Klipper runout helper
+                self.native_helper = getattr(sensor, 'runout_helper', None)
             
             @property
             def switch_pin(self):
@@ -118,10 +120,13 @@ class BridgeProxySensor:
                 return self.sensor.get_status(0).get('filament_detected', False)
 
             def enable_button_feedback(self, enable):
-                pass
+                if self.native_helper and hasattr(self.native_helper, 'enable_button_feedback'):
+                    self.native_helper.enable_button_feedback(enable)
             
             def enable_runout(self, enable):
                 self.sensor_enabled = enable
+                if self.native_helper and hasattr(self.native_helper, 'set_enabled'):
+                    self.native_helper.set_enabled(enable)
         self.runout_helper = ProxyHelper(native_sensor)
 
     def get_status(self, eventtime):
@@ -498,6 +503,17 @@ class MmuToolchangerBridge:
         # Refresh HH's sensor manager unit cache to recognize updated mappings
         mmu.sensor_manager.reset_active_unit(mmu.unit_selected)
         mmu.sensor_manager.reset_active_gate(mmu.gate_selected)
+
+        # Global Pre-gate Monitoring:
+        # Ensure that ALL pre-gate sensors are enabled regardless of the active unit.
+        # Happy Hare 3.0+ handles the insertion logic, but we must make sure Klipper
+        # is actually listening to the pins.
+        for name, sensor in mmu.sensor_manager.all_sensors.items():
+            if mmu.SENSOR_PRE_GATE_PREFIX in name:
+                helper = getattr(sensor, 'runout_helper', None)
+                if helper:
+                    helper.enable_runout(True)
+                    logging.info("MMU Toolchanger Bridge: Global monitor ENABLING %s" % name)
 
         mmu.log_info(
             "MMU: Active extruder switched to '%s' (sensor suffix: %s)"
