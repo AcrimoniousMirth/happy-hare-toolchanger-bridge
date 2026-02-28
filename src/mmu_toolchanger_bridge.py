@@ -127,17 +127,20 @@ class MmuToolchangerBridge:
         # which causes MMU_CALIBRATE_BOWDEN to fail. We add a 'mock' if missing.
         # We also need to add unit-prefixed versions (e.g. unit_1_extruder) because
         # HH looks those up in multi-unit configurations (T1-T5).
+        # We pass self.mmu.gear_rail.MockEndstop() to avoid the "pin mock used
+        # multiple times" error in Klipper's pin manager.
+        mock_es = mmu.gear_rail.MockEndstop()
         generic_names = [mmu.SENSOR_GATE, mmu.SENSOR_EXTRUDER_ENTRY, mmu.SENSOR_TOOLHEAD]
         for name in generic_names:
             names_to_check = [name]
             if mmu.mmu_machine.num_units > 1:
-                # Add unit prefixes for all possible units (T1-T5 belong to units >= 1)
-                for i in range(1, mmu.mmu_machine.num_units):
+                # Add unit prefixes for all possible units (0 to num_units-1)
+                for i in range(mmu.mmu_machine.num_units):
                     names_to_check.append(sensor_manager.get_unit_sensor_name(name, i))
 
             for n in names_to_check:
                 if n not in mmu.gear_rail.get_extra_endstop_names():
-                    mmu.gear_rail.add_extra_endstop("mock", n, register=True)
+                    mmu.gear_rail.add_extra_endstop("mock", n, register=True, mcu_endstop=mock_es)
 
         # 3. Save originals so we can restore them when T1+ is active
         self._orig_settings = {
@@ -255,28 +258,34 @@ class MmuToolchangerBridge:
             mmu.gate_preload_parking_distance = 0.0
 
             # Sensor relay swaps in gear_rail.extra_endstops
-            pre_gate_name = "%s_pre_gate_0" % p
-            extruder_name_es = "%s_extruder_0" % p
-            toolhead_name_es = "%s_toolhead_0" % p
+            # We map generic HH names (including unit-prefixed ones) to the
+            # physical sensors active for this toolhead.
+            unit_val = int(suffix)
+            
+            p_ext = "%s_extruder_%s" % (p, suffix)
+            p_th  = "%s_toolhead_%s" % (p, suffix)
+            p_gt  = "%s_pre_gate_%s" % (p, suffix) if is_t0 else None
             
             new_endstops = []
             registered_es = mmu.gear_rail.extra_endstops
-            for es, name in registered_es:
-                # For T0 (unit 0), HH might look up "extruder" or "unit_0_extruder"
-                # (though bridge usually forces unit_selected to match)
-                target_gate = mmu.SENSOR_GATE
-                target_extruder = mmu.SENSOR_EXTRUDER_ENTRY
-                target_toolhead = mmu.SENSOR_TOOLHEAD
+            
+            # Find physical endstops for target sensors
+            ext_es = next((e[0] for e in registered_es if e[1] == p_ext), None)
+            th_es  = next((e[0] for e in registered_es if e[1] == p_th), None)
+            gt_es  = next((e[0] for e in registered_es if e[1] == p_gt), None) if p_gt else None
 
-                if name in [target_gate, mmu.sensor_manager.get_unit_sensor_name(target_gate, 0)]:
-                    found_es = next((e[0] for e in registered_es if e[1] == pre_gate_name), es)
-                    new_endstops.append((found_es, name))
-                elif name in [target_extruder, mmu.sensor_manager.get_unit_sensor_name(target_extruder, 0)]:
-                    found_es = next((e[0] for e in registered_es if e[1] == extruder_name_es), es)
-                    new_endstops.append((found_es, name))
-                elif name in [target_toolhead, mmu.sensor_manager.get_unit_sensor_name(target_toolhead, 0)]:
-                    found_es = next((e[0] for e in registered_es if e[1] == toolhead_name_es), es)
-                    new_endstops.append((found_es, name))
+            for es, name in registered_es:
+                # Expected HH lookup names for this unit
+                hh_ext = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_EXTRUDER_ENTRY, unit_val)
+                hh_th  = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_TOOLHEAD, unit_val)
+                hh_gt  = mmu.sensor_manager.get_unit_sensor_name(mmu.SENSOR_GATE, unit_val)
+                
+                if name in [hh_ext, mmu.SENSOR_EXTRUDER_ENTRY] and ext_es:
+                    new_endstops.append((ext_es, name))
+                elif name in [hh_th, mmu.SENSOR_TOOLHEAD] and th_es:
+                    new_endstops.append((th_es, name))
+                elif name in [hh_gt, mmu.SENSOR_GATE] and gt_es:
+                    new_endstops.append((gt_es, name))
                 else:
                     new_endstops.append((es, name))
             mmu.gear_rail.extra_endstops = new_endstops
