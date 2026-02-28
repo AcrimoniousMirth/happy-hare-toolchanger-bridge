@@ -126,31 +126,40 @@ class MmuToolchangerBridge:
         # HH only automatically registers standard sensor names (e.g. mmu_extruder) if defined in [mmu_sensors].
         # We must manually find native Klipper sensors (mmu_extruder_0, mmu_toolhead_0, etc.) in the configfile
         # and register them so that the gear motor can stop on them during homing/calibration.
-        configfile = self.printer.lookup_object('configfile', None)
-        if configfile:
-            settings = configfile.get_status(self.reactor.monotonic())['settings']
-            p = self.sensor_prefix
-            
-            for section in settings.keys():
-                if section.startswith("filament_switch_sensor ") or section.startswith("mmu_sensor "):
-                    name = section.split(" ", 1)[1]
-                    if name.startswith("%s_" % p) and any(x in name for x in ["extruder_", "toolhead_", "pre_gate_", "gear_", "gate_", "tension_", "compression_"]):
-                        logging.info("MMU Toolchanger Bridge: checking native sensor '%s'" % name)
-                        if name not in mmu.gear_rail.get_extra_endstop_names():
-                            sensor_pin = settings[section].get('switch_pin', None)
-                            logging.info("MMU Toolchanger Bridge: native sensor '%s' resolved pin: %s" % (name, sensor_pin))
-                            
-                            if sensor_pin:
-                                try:
-                                    ppins = self.printer.lookup_object('pins')
-                                    pin_params = ppins.parse_pin(sensor_pin, True, True)
-                                    share_name = "%s:%s" % (pin_params['chip_name'], pin_params['pin'])
-                                    ppins.allow_multi_use_pin(share_name)
+        try:
+            configfile = self.printer.lookup_object('configfile', None)
+            if configfile:
+                # Klipper's configfile module stores the parsed status in 'config' or 'settings'
+                status = configfile.get_status(self.reactor.monotonic())
+                
+                # Depending on Klipper version, it might be under 'config' or 'settings' and contains dictionaries
+                config_dict = status.get('config', status.get('settings', {}))
+                
+                p = self.sensor_prefix
+                logging.info("MMU Toolchanger Bridge: scanning for native sensors with prefix '%s_'" % p)
+                
+                for section in config_dict.keys():
+                    if section.startswith("filament_switch_sensor ") or section.startswith("mmu_sensor "):
+                        name = section.split(" ", 1)[1]
+                        if name.startswith("%s_" % p) and any(x in name for x in ["extruder_", "toolhead_", "pre_gate_", "gear_", "gate_", "tension_", "compression_"]):
+                            logging.info("MMU Toolchanger Bridge: checking native sensor '%s'" % name)
+                            if name not in mmu.gear_rail.get_extra_endstop_names():
+                                sensor_pin = config_dict[section].get('switch_pin', None)
+                                logging.info("MMU Toolchanger Bridge: native sensor '%s' resolved pin: %s" % (name, sensor_pin))
+                                
+                                if sensor_pin:
+                                    try:
+                                        ppins = self.printer.lookup_object('pins')
+                                        pin_params = ppins.parse_pin(sensor_pin, True, True)
+                                        share_name = "%s:%s" % (pin_params['chip_name'], pin_params['pin'])
+                                        ppins.allow_multi_use_pin(share_name)
 
-                                    mmu.gear_rail.add_extra_endstop(sensor_pin, name)
-                                    logging.info("MMU Toolchanger Bridge: Registered %s as gear rail endstop" % name)
-                                except Exception as e:
-                                    logging.warning("MMU Toolchanger Bridge: Failed to register %s: %s" % (name, str(e)))
+                                        mmu.gear_rail.add_extra_endstop(sensor_pin, name)
+                                        logging.info("MMU Toolchanger Bridge: Registered %s as gear rail endstop" % name)
+                                    except Exception as e:
+                                        logging.warning("MMU Toolchanger Bridge: Failed to register %s: %s" % (name, str(e)))
+        except Exception as e:
+            logging.warning("MMU Toolchanger Bridge: Exception scanning for native sensors: %s" % str(e))
 
         # 2. Ensure generic HH endstop names exist in gear_rail so they can be swapped.
         # If the MMU doesn't have an extruder sensor, "extruder" won't be in the list,
