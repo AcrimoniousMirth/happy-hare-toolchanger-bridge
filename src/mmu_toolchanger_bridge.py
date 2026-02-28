@@ -602,6 +602,10 @@ class MmuToolchangerBridge:
                 actual_name = getattr(s, 'name', 'unknown')
                 logging.info("MMU Toolchanger Bridge: Sensor status '%s' -> %s (%s)" % (hh_name, actual_name, state))
 
+        # Register scan command
+        self.gcode.register_command("SCAN_MMU_PINS", self.cmd_SCAN_MMU_PINS,
+                                     help="Scan all MMB physical STP pins")
+
     # -------------------------------------------------------------------------
 
     def cmd_DUMP_MMU_BRIDGE(self, gcmd):
@@ -687,6 +691,80 @@ class MmuToolchangerBridge:
             except Exception as e:
                 gcmd.respond_info("  %s -> Error: %s" % (name, str(e)))
 
+    # -------------------------------------------------------------------------
+
+    def cmd_SCAN_MMU_PINS(self, gcmd):
+        mmu = self.printer.lookup_object('mmu', None)
+        if not mmu:
+            gcmd.respond_info("MMU object not found")
+            return
+
+        gcmd.respond_info("--- MMU Hardware Pin Scan ---")
+        gcmd.respond_info("Legend: Log=Logical State, Raw=Native Klipper State")
+        
+        # STP Pin Mapping for BTT MMB v1.1
+        stp_pins = {
+            "STP1": "PA3", "STP2": "PA4", "STP3": "PB9", "STP4": "PB8",
+            "STP5": "PC15", "STP6": "PC13", "STP7": "PC14", "STP8": "PB12",
+            "STP9": "PB11", "STP10": "PB10", "STP11": "PB2"
+        }
+        
+        mcus = ["MMB_0-2", "MMB_3-5"]
+        all_sensors = mmu.sensor_manager.all_sensors
+        
+        # Find which sensors are on which pins
+        pin_to_sensor = {}
+        for name, s in all_sensors.items():
+            # Look for pin in extra endstops
+            for es, es_name in mmu.gear_rail.extra_endstops:
+                if es_name == name:
+                    full_pin = getattr(es, '_pin', 'unknown')
+                    pin_to_sensor[full_pin] = name
+
+        for mcu_name in mcus:
+            gcmd.respond_info("MCU: %s" % mcu_name)
+            for stp_id in range(1, 12):
+                stp = "STP%d" % stp_id
+                pin = stp_pins[stp]
+                full_pin = "%s:%s" % (mcu_name, pin)
+                sensor_name = pin_to_sensor.get(full_pin, "No Config")
+                
+                status_str = "HIDDEN"
+                log_str = "?"
+                
+                # Try to find the Klipper object for this specific pin
+                found_obj = None
+                for obj_name in self.printer.lookup_objects():
+                    if not isinstance(obj_name, str): continue
+                    if 'filament_switch_sensor' in obj_name or 'mmu_sensor' in obj_name:
+                        obj = self.printer.lookup_object(obj_name)
+                        obj_pin = getattr(obj, '_pin', '')
+                        # Handle ^ ! mappings
+                        if pin in obj_pin and mcu_name in obj_pin:
+                            found_obj = obj
+                            if sensor_name == "No Config":
+                                sensor_name = obj_name.split(' ')[-1]
+                            break
+                
+                if found_obj and hasattr(found_obj, 'get_status'):
+                    try:
+                        raw_state = found_obj.get_status(0).get('filament_detected', False)
+                        status_str = "DETECTED" if raw_state else "EMPTY"
+                        
+                        # Check logical state if we have a mapping
+                        if sensor_name in all_sensors:
+                            s = all_sensors[sensor_name]
+                            if hasattr(s, 'filament_present'):
+                                log_str = "DET" if s.filament_present else "MT"
+                            else:
+                                h = getattr(s, 'runout_helper', None)
+                                if h: log_str = "DET" if h.filament_present else "MT"
+                    except:
+                        status_str = "ERR"
+                
+                gcmd.respond_info("  %s (%s) -> Log:%s, Raw:%s [%s]" % 
+                                 (stp, pin, log_str, status_str, sensor_name))
+                                 
     # -------------------------------------------------------------------------
 
     def cmd_SET_MMU_EXTRUDER(self, gcmd):
