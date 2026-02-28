@@ -88,7 +88,10 @@ class MmuToolchangerBridge:
                                              mmu_config.getfloat('gear_from_buffer_speed', 150.))
         self.t0_slow_speed = config.getfloat('t0_slow_speed', 
                                              mmu_config.getfloat('gear_homing_speed', 20.))
-
+        self.t0_pre_gate_to_gate_distance = config.getfloat('t0_pre_gate_to_gate_distance', 0.)
+        self.t0_gate_homing_max = config.getfloat('t0_gate_homing_max', 350.)
+        self.t0_gate_preload_homing_max = config.getfloat('t0_gate_preload_homing_max', 350.)
+        self.t0_gate_parking_distance = config.getfloat('t0_gate_parking_distance', 0.)
         # Saved HH defaults (captured at klippy:connect)
         self._orig_settings = {}
         
@@ -172,6 +175,8 @@ class MmuToolchangerBridge:
             'extruder_force_homing':  getattr(mmu, 'extruder_force_homing', False),
             'gate_load_retries':      getattr(mmu, 'gate_load_retries', 2),
             'preload_attempts':       getattr(mmu, 'preload_attempts', 2),
+            'gate_preload_homing_max': getattr(mmu, 'gate_preload_homing_max', 350.),
+            'gate_parking_distance':  getattr(mmu, 'gate_parking_distance', 0.),
             'gate_preload_parking_distance': getattr(mmu, 'gate_preload_parking_distance', -10.),
             'extra_endstops':         list(mmu.gear_rail.extra_endstops) # copy
         }
@@ -265,7 +270,10 @@ class MmuToolchangerBridge:
             
             mmu.bowden_homing_max = self.t0_bowden_max
             if hasattr(mmu, 'gate_homing_max'):
-                mmu.gate_homing_max = self.t0_bowden_max
+                mmu.gate_homing_max = self.t0_gate_homing_max
+            
+            mmu.gate_preload_homing_max = self.t0_gate_preload_homing_max
+            mmu.gate_parking_distance = self.t0_gate_parking_distance
             
             mmu.gear_from_buffer_speed = self.t0_fast_speed
             mmu.gear_homing_speed = self.t0_slow_speed
@@ -326,6 +334,10 @@ class MmuToolchangerBridge:
                 mmu.extruder_force_homing = self._orig_settings['extruder_force_homing']
                 mmu.gate_load_retries = self._orig_settings['gate_load_retries']
                 mmu.preload_attempts = self._orig_settings['preload_attempts']
+                if 'gate_preload_homing_max' in self._orig_settings:
+                    mmu.gate_preload_homing_max = self._orig_settings['gate_preload_homing_max']
+                if 'gate_parking_distance' in self._orig_settings:
+                    mmu.gate_parking_distance = self._orig_settings['gate_parking_distance']
                 mmu.gate_preload_parking_distance = self._orig_settings['gate_preload_parking_distance']
                 mmu.gear_rail.extra_endstops = list(self._orig_settings['extra_endstops'])
 
@@ -334,17 +346,15 @@ class MmuToolchangerBridge:
             mmu.SENSOR_EXTRUDER_ENTRY: "%s_extruder_%s" % (p, suffix),
             mmu.SENSOR_TOOLHEAD:       "%s_toolhead_%s" % (p, suffix),
             mmu.SENSOR_TENSION:        "%s_tension_%s"  % (p, suffix),
-            mmu.SENSOR_GATE:           "%s_pre_gate_0"  % p if is_t0 else None,
+            mmu.SENSOR_GATE:           "%s_gate_0"  % p if is_t0 else None,
         }
 
         # Sensor Deception for T0 Preload:
         # Happy Hare checks for gear and gate sensors using prefix + _gate. 
-        # For Gate 0, it looks for 'mmu_gear_0' and 'gate_0'.
-        # We must map these specific keys in all_sensors to trick the preload logic.
+        # For Gate 0, it looks for 'mmu_gear_0'. We only map gear to pre_gate.
         if is_t0:
             sensor_map.update({
                 "%s_0" % mmu.SENSOR_GEAR_PREFIX: "%s_pre_gate_0" % p,
-                "%s_0" % mmu.SENSOR_GATE:        "%s_pre_gate_0" % p,
             })
 
         for hh_key, sensor_name in sensor_map.items():
