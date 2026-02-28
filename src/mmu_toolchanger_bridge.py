@@ -133,6 +133,7 @@ class MmuToolchangerBridge:
         # (e.g. mmu_extruder_0, mmu_toolhead_0, mmu_extruder_1, etc.)
         for name, sensor in sensor_manager.all_sensors.items():
             if name.startswith("%s_" % p) and any(x in name for x in ["extruder_", "toolhead_", "pre_gate_", "gear_", "gate_"]):
+                logging.info("MMU Toolchanger Bridge: checking sensor '%s'" % name)
                 # Ensure it's in gear_rail extra_endstops so we can relay to it
                 if name not in mmu.gear_rail.get_extra_endstop_names():
                     sensor_pin = None
@@ -149,6 +150,8 @@ class MmuToolchangerBridge:
                             sensor_block = "filament_switch_sensor %s" % name
                             if sensor_block in settings and 'switch_pin' in settings[sensor_block]:
                                 sensor_pin = settings[sensor_block]['switch_pin']
+                    
+                    logging.info("MMU Toolchanger Bridge: sensor '%s' resolved pin: %s" % (name, sensor_pin))
                     if sensor_pin:
                         try:
                             ppins = self.printer.lookup_object('pins')
